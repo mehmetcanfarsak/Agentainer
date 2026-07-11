@@ -77,4 +77,4 @@ jobs:
           shellcheck hooks/*.sh agentainer bin/agentainer.js 2>/dev/null || \
             shellcheck hooks/*.sh agentainer
       - name: Validate example YAML loads without PyYAML
-        run: python -c "import sys; sys.path.insert(0,'lib'); import config; config.load_config('examples/quickstart.yaml'); print('example config valid')"
+        run: python -c "import sys; sys.path.insert(0,'lib'); import config; config.load('examples/quickstart.yaml'); print('example config valid')"

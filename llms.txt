@@ -44,9 +44,39 @@ mailroom route mail safely. Swap each `command` for a real agent CLI to run for 
 - Liveness supervisor heartbeat retained (no event-only redesign).
 - Durable JSONL event log is the source of truth for history.
 
+## Commands
+- `validate` — resolve and print the config; launch nothing.
+- `up` — create dirs + mailbox folders, install per-type turn-detection, open one tmux session per agent, send the role.
+- `down` / `restart` — tear down / down+up.
+- `status` / `attach` / `logs` — health, attach, durable JSONL log (`-f` follows).
+- `send` — send a `user` message into the swarm (`--to <agent>`).
+- `user` — toggle `user` availability (`available`/`away`/`inbox`/`send`).
+- `queue` / `inbox` / `idle` — inspect pending mail, current inbox, idle agents.
+- `hook` / `watch` / `supervise` — turn-completion hook, live pane watch, liveness supervisor.
+- `serve` — HTTP control-plane UI (observability + send-as-user) on `127.0.0.1`; token required for any non-loopback bind.
+- `add <name> --type T --command C --can-talk-to X` — add an agent to the config and bring it up.
+- `edit <name> -s key=value` — edit an agent's fields and reconcile.
+- `remove <name>` — remove an agent and stop its session.
+- `reconcile` — start agents missing from the running set / stop orphaned sessions.
+
+## Control-plane UI (P2–P3)
+`agentainer serve -c swarm.yaml --port 8080 --token <secret>` serves a zero-dependency
+UI (stdlib `http.server` + one vanilla-JS page; no framework, no build). It shows
+swarm/agent status, logs, inbox, queue, a live terminal snapshot of each agent's tmux
+pane, and lets you inject mail as the `user` mailbox. Binds `127.0.0.1` by default;
+a token is required for any non-loopback bind (the UI is a control plane).
+
+## Dynamic reconcile (P4)
+Change the swarm without a full teardown: `add`/`remove`/`edit` rewrite `agentainer.yaml`
+with a stdlib-only YAML emitter (works with or without PyYAML) and then `reconcile` the
+change into effect.
+
 ## Project status
-- **P1 — Mail runtime (CLI-driven)**: in progress.
-- **P2 — UI observability**, **P3 — terminal snapshot + send**, **P4 — dynamic reconcile**: planned.
+- **P1 — Mail runtime (CLI-driven)**: ✅ done.
+- **P2 — UI observability**: ✅ done.
+- **P3 — terminal snapshot + send-from-UI**: ✅ done.
+- **P4 — dynamic reconcile (`add`/`remove`/`edit`/`reconcile`)**: ✅ done.
+- 100% line coverage across all core + UI + reconcile modules, via mock agents (no API keys).
 
 ## Docs
 - `ProjectPlan.md` — the design (source of truth).

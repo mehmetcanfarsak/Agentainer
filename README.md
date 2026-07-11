@@ -85,6 +85,11 @@ re-injecting the protocol every time (including the allowed-recipient list).
 | `watch` | Live-watch the supervisor. |
 | `supervise` | Run one (or the loop of) supervisor tick(s). |
 | `user` | Toggle `user` availability. |
+| `serve` | Serve the HTTP control-plane UI (observability + send-as-user) on `127.0.0.1`. |
+| `add` | Add an agent to the config (YAML) and bring it up immediately. |
+| `remove` | Remove an agent from the config and stop its session. |
+| `edit` | Edit an agent's fields in the config (`-s key=value`, repeatable) and reconcile. |
+| `reconcile` | Start agents missing from the running set / stop sessions no longer configured. |
 
 See `llms.txt` for a machine-readable summary and `ProjectPlan.md` for the full
 design (source of truth).
@@ -101,11 +106,39 @@ design (source of truth).
   scrollback).
 - **100% line coverage** via mock agents (bash loops, no API keys).
 
+## The control-plane UI (P2–P3)
+
+`agentainer serve -c my-swarm.yaml --port 8080 --token <secret>` starts a
+**zero-dependency** web UI (stdlib `http.server` + a single vanilla-JS page, no
+framework, no build step). It binds `127.0.0.1` by default; any non-loopback bind
+requires a token. The UI shows swarm/agent status, per-agent logs, the current
+inbox and queue, a **live terminal snapshot** of each agent's tmux pane, and lets
+you inject mail as the `user` mailbox. The UI is a control plane, so keep it on
+loopback unless a token is supplied.
+
+## Dynamic reconcile (P4)
+
+No need to tear the whole swarm down to change it:
+
+```bash
+agentainer add    dave --type codex --command "codex" --can-talk-to "alice,user" -c my-swarm.yaml
+agentainer edit   alice -s can_talk_to="dave,user" -c my-swarm.yaml
+agentainer remove bob -c my-swarm.yaml
+agentainer reconcile -c my-swarm.yaml      # start missing agents, stop orphaned sessions
+```
+
+`add`/`remove`/`edit` rewrite `agentainer.yaml` with a stdlib-only YAML emitter
+(works with **or without** PyYAML) and then `reconcile` the change into effect.
+
 ## Project status
 
-- **P1 — Mail runtime (CLI-driven)**: in progress.
-- **P2 — UI observability**, **P3 — terminal snapshot + send**, **P4 — dynamic
-  reconcile**: planned, out of scope for this pass.
+- **P1 — Mail runtime (CLI-driven)**: ✅ done.
+- **P2 — UI observability**: ✅ done.
+- **P3 — terminal snapshot + send-from-UI**: ✅ done.
+- **P4 — dynamic reconcile (`add`/`remove`/`edit`/`reconcile`)**: ✅ done.
+
+100% line coverage across all core + UI + reconcile modules, driven entirely by
+mock agents (no API keys).
 
 ## License
 

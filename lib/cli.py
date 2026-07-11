@@ -36,6 +36,7 @@ import sessions  # noqa: E402
 import tmux  # noqa: E402
 import turn  # noqa: E402
 import ui  # noqa: E402
+import reconcile  # noqa: E402
 
 # Repo root: AGENTAINER_HOME overrides, else this file's grandparent (lib/..).
 AGENTAINER_HOME = Path(
@@ -232,6 +233,38 @@ def start_agent(cfg, agent, extra_env=None, resume_cmd: str | None = None) -> No
     info(f"started {agent.name} ({agent.type}) in tmux session {agent.session!r}")
 
 
+def launch_agent_full(cfg, agent, resume_cmd: str | None = None) -> None:
+    """Start *agent* in a tmux session AND deliver its first prompt (the role).
+
+    Combines ``start_agent`` with the readiness-wait + role paste that used to
+    live in a separate loop in ``cmd_up``. Shared with the P4 reconcile path so a
+    newly-added agent boots identically to ``up``. A resumed agent gets its
+    session recreated but no first prompt (its prior conversation is restored).
+    """
+    extra_env = hooks.install_turn_detection(agent)
+    start_agent(cfg, agent, extra_env, resume_cmd)
+    if resume_cmd is not None:
+        info(f"{agent.name}: resumed, not re-sending the first prompt")
+        return
+    if not agent.role:
+        return
+    try:
+        if agent.ready_probe and not tmux.wait_until_ready(cfg, agent):
+            warn(
+                f"{agent.name}: input box never responded within "
+                f"{cfg.ready_timeout_ms}ms; sending the prompt anyway"
+            )
+        if tmux.paste_into(cfg, agent.session, agent.role):
+            turn.mark_turn_started(cfg, agent.name, "user")
+            info(f"sent first prompt to {agent.name}")
+        else:
+            warn(f"{agent.name}: first prompt may not have been delivered")
+        log.log_event(cfg, agent.name, "first_prompt", text=agent.role)
+    except tmux.SwarmError as exc:
+        warn(f"{agent.name}: could not send first prompt: {exc}")
+    time.sleep(cfg.send_delay_ms / 1000.0)
+
+
 # --------------------------------------------------------------------------
 # lifecycle handlers
 # --------------------------------------------------------------------------
@@ -258,7 +291,6 @@ def cmd_up(args) -> int:
     recorded = sessions.read_sessions(cfg) if resume else {}
 
     started: list = []
-    resumed: set = set()
     for agent in selected:
         if tmux.session_exists(agent.session):
             if not getattr(args, "restart", False):
@@ -275,7 +307,6 @@ def cmd_up(args) -> int:
             else:
                 resume_cmd = sessions.resume_command(cfg, agent, session_id)
                 if resume_cmd:
-                    resumed.add(agent.name)
                     info(f"{agent.name}: resuming conversation {session_id}")
                 else:
                     warn(
@@ -283,9 +314,8 @@ def cmd_up(args) -> int:
                         "(set resume_args or resume_command); starting a fresh conversation"
                     )
 
-        # Per-type turn-completion wiring (returns extra env for the session).
-        extra_env = hooks.install_turn_detection(agent)
-        start_agent(cfg, agent, extra_env, resume_cmd)
+        # Per-type turn-completion wiring + open session + deliver first prompt.
+        launch_agent_full(cfg, agent, resume_cmd)
         started.append(agent)
 
     if setup_holder:
@@ -294,35 +324,6 @@ def cmd_up(args) -> int:
     if not started:
         info("nothing to start")
         return 0
-
-    # Give the CLIs a moment to draw their splash, then wait for each one's
-    # input box to actually respond before typing the first prompt.
-    boot = max((a.boot_delay_ms for a in started), default=0)
-    if boot:
-        info(f"waiting {boot}ms for agents to boot...")
-        time.sleep(boot / 1000.0)
-
-    for agent in started:
-        if agent.name in resumed:
-            info(f"{agent.name}: resumed, not re-sending the first prompt")
-            continue
-        if not agent.role:
-            continue
-        try:
-            if agent.ready_probe and not tmux.wait_until_ready(cfg, agent):
-                warn(
-                    f"{agent.name}: input box never responded within "
-                    f"{cfg.ready_timeout_ms}ms; sending the prompt anyway"
-                )
-            if tmux.paste_into(cfg, agent.session, agent.role):
-                turn.mark_turn_started(cfg, agent.name, "user")
-                info(f"sent first prompt to {agent.name}")
-            else:
-                warn(f"{agent.name}: first prompt may not have been delivered")
-            log.log_event(cfg, agent.name, "first_prompt", text=agent.role)
-        except tmux.SwarmError as exc:
-            warn(f"{agent.name}: could not send first prompt: {exc}")
-        time.sleep(cfg.send_delay_ms / 1000.0)
 
     # The supervisor is the heartbeat the event-driven design lacks: it reconciles
     # dead/stale agents on a timer so one silent agent cannot wedge the swarm.
@@ -798,6 +799,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--host", default=None, help="bind host (default: 127.0.0.1)")
     p_serve.add_argument("--port", type=int, default=0, help="port (default: auto)")
     p_serve.add_argument("--token", default=None, help="auth token (default: env or random)")
+
+    # P4: dynamic reconcile -- add / remove / edit agents at runtime.
+    p_add = add("add", reconcile.cmd_add, "add an agent to the config and bring it up")
+    p_add.add_argument("name", help="new agent name")
+    p_add.add_argument("--type", required=True, help="agent type (claude|codex|gemini|hermes)")
+    p_add.add_argument("--command", required=True, help="shell command that launches the agent CLI")
+    p_add.add_argument("--can-talk-to", default="user", help="comma-separated ACL, or '*' for all")
+    p_add.add_argument("--role", default="", help="standing role / first prompt")
+    p_add.add_argument("--workdir", default=None, help="working directory (default: <root>/<name>)")
+
+    p_remove = add("remove", reconcile.cmd_remove, "remove an agent from the config and stop it")
+    p_remove.add_argument("name", help="agent to remove")
+
+    p_edit = add("edit", reconcile.cmd_edit, "edit an agent's fields in the config and reconcile")
+    p_edit.add_argument("name", help="agent to edit")
+    p_edit.add_argument("-s", "--set", action="append", help="key=value to set (repeatable)")
+
+    add("reconcile", reconcile.cmd_reconcile, "start missing agents / stop extra sessions to match config")
 
     return parser
 

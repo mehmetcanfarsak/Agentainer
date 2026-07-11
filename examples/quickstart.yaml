@@ -2,11 +2,11 @@
 # Quickstart swarm -- copy this, run it, watch agents route mail.
 #
 #   cp quickstart.yaml my-swarm.yaml
-#   ./agentainer up       -c my-swarm.yaml
-#   ./agentainer status   -c my-swarm.yaml
-#   ./agentainer send     -c my-swarm.yaml --to orchestrator "Build a CLI that converts CSV to Parquet."
-#   ./agentainer logs     -c my-swarm.yaml -f
-#   ./agentainer down     -c my-swarm.yaml
+#   agentainer up       -c my-swarm.yaml
+#   agentainer status   -c my-swarm.yaml
+#   agentainer send     -c my-swarm.yaml --to orchestrator "Build a CLI that converts CSV to Parquet."
+#   agentainer logs     -c my-swarm.yaml -f
+#   agentainer down     -c my-swarm.yaml
 #
 # The `command:` lines run a tiny bash loop instead of a real agent CLI, so the
 # swarm comes up and routes mail with NO API keys and NO model calls -- it is a
