@@ -1,4 +1,4 @@
-# Research swarm — a coordinator briefs a researcher, who hands off to a reviewer.
+# 🔬 Research swarm — a coordinator briefs a researcher, who hands off to a reviewer.
 # Real agents: the `command:` lines launch the actual CLIs. For a key-free demo, swap each for a mock bash loop.
 swarm:
   name: research

@@ -1,5 +1,5 @@
 # =============================================================================
-# Quickstart swarm -- copy this, run it, watch agents route mail.
+# ⚡ Quickstart swarm -- copy this, run it, watch agents route mail.
 #
 #   cp quickstart.yaml my-swarm.yaml
 #   agentainer up       -c my-swarm.yaml

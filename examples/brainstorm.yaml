@@ -1,5 +1,5 @@
 # =============================================================================
-# Brainstorm -- two agents riff on a prompt, each extending the other, with no
+# 💡 Brainstorm -- two agents riff on a prompt, each extending the other, with no
 # orchestrator in the middle. A pure ping-pong of ideas via the mail model.
 #
 #   cp examples/brainstorm.yaml my-session.yaml

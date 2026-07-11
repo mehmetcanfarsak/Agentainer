@@ -740,3 +740,66 @@ def test_send_enter_delay_defaults_and_override(tmp_path):
     )
     assert cfg2.send_delay_ms == 50
     assert cfg2.enter_delay_ms == 70
+
+
+# ------------------------------------------------------------------ telegram
+
+def test_telegram_defaults_when_absent(tmp_path):
+    cfg = load_config(
+        "swarm: {root: ./ws}\n"
+        "defaults: {type: claude}\n"
+        "agents:\n  - {name: A, command: 'true'}\n",
+        tmp_path,
+    )
+    assert cfg.telegram.enabled is False
+    assert cfg.telegram.mirror == "*"
+    assert cfg.telegram.mirror_user is True
+    assert cfg.telegram.mirror_system is False
+
+
+def test_telegram_block_parsed(tmp_path):
+    cfg = load_config(
+        "swarm: {root: ./ws}\n"
+        "telegram: {enabled: true, bot_token: '1:x', chat_id: '9', mirror: [A, B], mirror_system: true}\n"
+        "defaults: {type: claude}\n"
+        "agents:\n  - {name: A, command: 'true'}\n  - {name: B, command: 'true'}\n",
+        tmp_path,
+    )
+    assert cfg.telegram.enabled is True
+    assert cfg.telegram.bot_token == "1:x"
+    assert cfg.telegram.chat_id == "9"
+    assert cfg.telegram.mirror == ["A", "B"]
+    assert cfg.telegram.mirror_system is True
+
+
+def test_telegram_mirror_all_keyword(tmp_path):
+    cfg = load_config(
+        "swarm: {root: ./ws}\n"
+        "telegram: {mirror: all}\n"
+        "defaults: {type: claude}\n"
+        "agents:\n  - {name: A, command: 'true'}\n",
+        tmp_path,
+    )
+    assert cfg.telegram.mirror == "*"
+
+
+def test_telegram_bad_mirror_type(tmp_path):
+    with pytest.raises(ConfigError):
+        load_config(
+            "swarm: {root: ./ws}\n"
+            "telegram: {mirror: 5}\n"
+            "defaults: {type: claude}\n"
+            "agents:\n  - {name: A, command: 'true'}\n",
+            tmp_path,
+        )
+
+
+def test_telegram_not_a_mapping(tmp_path):
+    with pytest.raises(ConfigError):
+        load_config(
+            "swarm: {root: ./ws}\n"
+            "telegram: nope\n"
+            "defaults: {type: claude}\n"
+            "agents:\n  - {name: A, command: 'true'}\n",
+            tmp_path,
+        )

@@ -1,5 +1,5 @@
 # =============================================================================
-# Incident response -- coordinate a live production fire.
+# 🚨 Incident response -- coordinate a live production fire.
 #
 #   1. Point an agent's `workdir` at the repo/service that is on fire (see the
 #      commented line under `agents:`), or leave the defaults to spin up scratch

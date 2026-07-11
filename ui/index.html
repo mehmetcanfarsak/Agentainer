@@ -2,113 +2,325 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="light dark" />
 <title>Agentainer</title>
 <style>
-  :root { color-scheme: light dark; }
+  /* ---- design tokens (light + dark) ------------------------------------ */
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f6f9;
+    --surface: #ffffff;
+    --surface-2: #eef1f5;
+    --border: #e2e6ec;
+    --text: #171a1f;
+    --muted: #667085;
+    --accent: #2563eb;
+    --accent-fg: #ffffff;
+    --accent-soft: #e6efff;
+    --ok-bg: #e3f6e9; --ok-fg: #157a3c;
+    --busy-bg: #fdf0d5; --busy-fg: #9a6b00;
+    --no-bg: #fde2e1; --no-fg: #b4231d;
+    --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.10);
+    --shadow-lg: 0 8px 28px rgba(16,24,40,.18);
+    --radius: 14px;
+    --radius-sm: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d0f13;
+      --surface: #161a21;
+      --surface-2: #1e232c;
+      --border: #262c37;
+      --text: #e7eaee;
+      --muted: #8b93a1;
+      --accent: #4f8cff;
+      --accent-fg: #0b1220;
+      --accent-soft: #17233b;
+      --ok-bg: #16351f; --ok-fg: #7ee29a;
+      --busy-bg: #3a3416; --busy-fg: #ffd97a;
+      --no-bg: #3a1d1d; --no-fg: #ff9b9b;
+      --shadow: 0 1px 2px rgba(0,0,0,.4);
+      --shadow-lg: 0 12px 40px rgba(0,0,0,.55);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  /* The `hidden` attribute must win over class-level `display` rules (e.g. the
+     login card's `.center { display: grid }`), or hiding it visually no-ops. */
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
   body {
-    font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-    margin: 0; padding: 1.5rem; max-width: 980px; margin: 0 auto;
-    background: #0f1115; color: #e6e6e6;
+    margin: 0;
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
   }
-  h1 { font-size: 1.3rem; margin: 0 0 .25rem; }
-  .sub { color: #8b93a1; margin: 0 0 1rem; }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  a { color: var(--accent); }
+
+  /* ---- app bar --------------------------------------------------------- */
+  header#bar {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: .75rem;
+    padding: .6rem max(.9rem, env(safe-area-inset-left)) .6rem max(.9rem, env(safe-area-inset-left));
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    backdrop-filter: saturate(1.4) blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  .brand { display: flex; align-items: center; gap: .55rem; font-weight: 700; letter-spacing: -.01em; }
+  .brand .dot {
+    width: 26px; height: 26px; border-radius: 8px; flex: 0 0 auto;
+    background: linear-gradient(135deg, var(--accent), #7c3aed);
+    display: grid; place-items: center; color: #fff; font-size: 15px;
+    box-shadow: var(--shadow);
+  }
+  .brand small { display: block; font-weight: 500; color: var(--muted); font-size: .72rem; margin-top: -2px; }
+  header#bar .spacer { flex: 1 1 auto; }
+  .navbtn {
+    background: transparent; border: 1px solid transparent; color: var(--muted);
+    padding: .4rem .7rem; border-radius: 999px; font-weight: 600; font-size: .9rem;
+  }
+  .navbtn.active { color: var(--text); background: var(--surface-2); border-color: var(--border); }
+  .navbtn:hover { color: var(--text); }
+
+  /* availability switch */
+  .avail { display: inline-flex; align-items: center; gap: .5rem; }
+  .avail .lbl { font-size: .82rem; color: var(--muted); white-space: nowrap; }
+  .switch { position: relative; width: 42px; height: 24px; flex: 0 0 auto; }
+  .switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .switch .track {
+    position: absolute; inset: 0; border-radius: 999px; background: var(--surface-2);
+    border: 1px solid var(--border); transition: background .18s;
+  }
+  .switch .knob {
+    position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%;
+    background: #fff; box-shadow: var(--shadow); transition: transform .18s;
+  }
+  .switch input:checked + .track { background: var(--ok-fg); border-color: var(--ok-fg); }
+  .switch input:checked + .track + .knob { transform: translateX(18px); }
+
+  /* ---- layout ---------------------------------------------------------- */
+  main { max-width: 1080px; margin: 0 auto; padding: 1rem max(.9rem, env(safe-area-inset-left)) 3rem; }
+  .muted { color: var(--muted); }
+  .banner { color: var(--no-fg); min-height: 1.1rem; margin: .2rem 0; font-size: .9rem; }
+  .center { min-height: 60vh; display: grid; place-items: center; }
+
   .card {
-    background: #171a21; border: 1px solid #262b36; border-radius: 8px;
-    padding: 1rem; margin-bottom: 1rem;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow);
   }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid #262b36; }
-  th { color: #8b93a1; font-weight: 600; }
-  .pill { padding: .1rem .45rem; border-radius: 999px; font-size: .75rem; }
-  .ok { background: #16351f; color: #7ee29a; }
-  .no { background: #3a1d1d; color: #ff9b9b; }
-  .busy { background: #3a3416; color: #ffd97a; }
-  input, textarea, button, select {
-    font: inherit; background: #0f1115; color: #e6e6e6;
-    border: 1px solid #2c323f; border-radius: 6px; padding: .45rem .55rem;
+
+  /* login */
+  #login .card { padding: 1.5rem; width: min(420px, 92vw); }
+  #login h2 { margin: .2rem 0 .3rem; }
+  input.field, textarea.field, select.field {
+    width: 100%; background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: .6rem .7rem;
   }
-  textarea { width: 100%; box-sizing: border-box; min-height: 4rem; resize: vertical; }
-  button { cursor: pointer; background: #1f6feb; border-color: #1f6feb; color: #fff; }
-  button:hover { background: #2c7dff; }
+  input.field:focus, textarea.field:focus, select.field:focus {
+    outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 0;
+    border-color: var(--accent);
+  }
+  .btn {
+    background: var(--accent); color: var(--accent-fg); border: 1px solid transparent;
+    padding: .55rem .9rem; border-radius: var(--radius-sm); font-weight: 650;
+    box-shadow: var(--shadow);
+  }
+  .btn:hover { filter: brightness(1.06); }
+  .btn.ghost { background: var(--surface-2); color: var(--text); border-color: var(--border); box-shadow: none; }
+  .btn.danger { background: var(--no-bg); color: var(--no-fg); box-shadow: none; }
+  .btn.sm { padding: .35rem .6rem; font-size: .85rem; }
+
+  /* pills */
+  .pill { display: inline-flex; align-items: center; gap: .3rem; padding: .12rem .5rem; border-radius: 999px; font-size: .74rem; font-weight: 600; }
+  .pill.ok { background: var(--ok-bg); color: var(--ok-fg); }
+  .pill.busy { background: var(--busy-bg); color: var(--busy-fg); }
+  .pill.no { background: var(--no-bg); color: var(--no-fg); }
+  .pill.mute { background: var(--surface-2); color: var(--muted); }
+  .dotpulse { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+  /* avatar */
+  .avatar {
+    width: 40px; height: 40px; border-radius: 12px; flex: 0 0 auto; display: grid; place-items: center;
+    font-weight: 700; color: #fff; font-size: .95rem;
+  }
+  .avatar.sm { width: 32px; height: 32px; border-radius: 10px; font-size: .82rem; }
+
+  /* ---- agents overview grid ------------------------------------------- */
+  .grid { display: grid; gap: .9rem; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .agentcard { padding: 1rem; display: flex; flex-direction: column; gap: .7rem; cursor: pointer; transition: transform .12s, box-shadow .12s, border-color .12s; }
+  .agentcard:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+  .agentcard .top { display: flex; align-items: center; gap: .7rem; }
+  .agentcard .name { font-weight: 700; }
+  .agentcard .role { color: var(--muted); font-size: .86rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.6em; }
+  .agentcard .meta { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .sectiontitle { display: flex; align-items: center; justify-content: space-between; margin: .3rem 0 .8rem; }
+  .sectiontitle h2 { margin: 0; font-size: 1.05rem; }
+
+  /* ---- mail app -------------------------------------------------------- */
+  .mailhead { display: flex; align-items: center; gap: .6rem; margin-bottom: .8rem; flex-wrap: wrap; }
+  .mailhead .who { display: flex; align-items: center; gap: .6rem; }
+  .mailhead h2 { margin: 0; font-size: 1.05rem; }
+  .mail { display: grid; grid-template-columns: 300px 1fr; gap: .9rem; align-items: start; }
+  .contacts { padding: .4rem; overflow: hidden; }
+  .contact {
+    display: flex; gap: .6rem; align-items: center; padding: .55rem .55rem; border-radius: var(--radius-sm);
+    cursor: pointer; border: 1px solid transparent;
+  }
+  .contact:hover { background: var(--surface-2); }
+  .contact.active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+  .contact .info { min-width: 0; flex: 1 1 auto; }
+  .contact .cn { display: flex; justify-content: space-between; gap: .4rem; align-items: baseline; }
+  .contact .cn b { font-weight: 650; }
+  .contact .cn .t { color: var(--muted); font-size: .72rem; white-space: nowrap; }
+  .contact .prev { color: var(--muted); font-size: .82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .badge { background: var(--accent); color: var(--accent-fg); border-radius: 999px; font-size: .7rem; font-weight: 700; padding: .05rem .42rem; }
+
+  .thread { display: flex; flex-direction: column; min-height: 60vh; }
+  .thread .scroll { padding: 1rem; display: flex; flex-direction: column; gap: .7rem; overflow-y: auto; flex: 1 1 auto; }
+  .msg { max-width: 78%; padding: .55rem .75rem; border-radius: 14px; box-shadow: var(--shadow); word-wrap: break-word; overflow-wrap: anywhere; }
+  .msg .m-head { font-size: .68rem; color: var(--muted); margin-bottom: .2rem; display: flex; gap: .5rem; }
+  /* rendered markdown inside a bubble */
+  .msg .m-body > :first-child { margin-top: 0; }
+  .msg .m-body > :last-child { margin-bottom: 0; }
+  .msg p { margin: 0 0 .45rem; }
+  .msg .md-h { margin: .4rem 0 .3rem; font-size: 1rem; line-height: 1.3; }
+  .msg ul, .msg ol { margin: .2rem 0 .45rem; padding-left: 1.25rem; }
+  .msg li { margin: .1rem 0; }
+  .msg code { background: rgba(127,127,127,.18); padding: .05rem .3rem; border-radius: 5px; font: .85em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .msg pre.md-pre { background: rgba(127,127,127,.16); padding: .5rem .6rem; border-radius: 8px; overflow-x: auto; margin: .35rem 0; }
+  .msg pre.md-pre code { background: none; padding: 0; }
+  .msg blockquote { margin: .3rem 0; padding-left: .6rem; border-left: 3px solid rgba(127,127,127,.4); opacity: .9; }
+  .msg a { color: inherit; text-decoration: underline; }
+  .msg.out code, .msg.out pre.md-pre { background: rgba(255,255,255,.2); }
+  .m-status { font-size: .66rem; margin-top: .25rem; text-align: right; color: var(--muted); letter-spacing: .01em; }
+  .msg.out .m-status { color: color-mix(in srgb, var(--accent-fg) 78%, transparent); }
+  .m-status.s-read { color: var(--ok-fg); }
+  .msg.out .m-status.s-read { color: color-mix(in srgb, var(--accent-fg) 92%, var(--ok-fg)); }
+  .msg.in { align-self: flex-start; background: var(--surface-2); border-bottom-left-radius: 5px; }
+  .msg.out { align-self: flex-end; background: var(--accent); color: var(--accent-fg); border-bottom-right-radius: 5px; }
+  .msg.out .m-head { color: color-mix(in srgb, var(--accent-fg) 75%, transparent); }
+  .msg.system { align-self: center; background: transparent; border: 1px dashed var(--border); color: var(--muted); font-size: .85rem; box-shadow: none; max-width: 90%; }
+  .empty { color: var(--muted); text-align: center; padding: 2rem 1rem; }
+
+  .compose { border-top: 1px solid var(--border); padding: .7rem; display: flex; gap: .5rem; align-items: flex-end; }
+  .compose textarea { min-height: 44px; max-height: 40vh; resize: vertical; }
+  .composenote { padding: .7rem; border-top: 1px solid var(--border); color: var(--muted); font-size: .85rem; }
+
+  /* terminal panel */
+  .terminal { margin-top: .9rem; padding: .8rem; }
+  .terminal .thead { display: flex; align-items: center; justify-content: space-between; margin-bottom: .5rem; gap: .5rem; }
+  pre.pane {
+    background: #0b0d11; color: #cdd6e4; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: .7rem; max-height: 42vh; overflow: auto; white-space: pre; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .typerow { display: flex; gap: .5rem; margin-top: .5rem; }
+
+  /* ---- settings -------------------------------------------------------- */
+  .settings { display: flex; flex-direction: column; gap: 1rem; }
+  .formgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .8rem; }
+  .fld { display: flex; flex-direction: column; gap: .3rem; }
+  .fld label { font-size: .8rem; color: var(--muted); font-weight: 600; }
+  .panel { padding: 1rem; }
+  .panel h3 { margin: 0 0 .2rem; }
+  .agentrow { display: flex; align-items: center; gap: .7rem; padding: .6rem .2rem; border-bottom: 1px solid var(--border); }
+  .agentrow:last-child { border-bottom: none; }
+  .agentrow .info { flex: 1 1 auto; min-width: 0; }
   .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
-  .row > * { flex: 0 0 auto; }
-  .grow { flex: 1 1 200px !important; }
-  pre {
-    background: #0f1115; border: 1px solid #262b36; border-radius: 6px;
-    padding: .6rem; max-height: 320px; overflow: auto; white-space: pre-wrap;
+  .rowend { display: flex; gap: .5rem; justify-content: flex-end; margin-top: .6rem; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 1.3rem; transform: translateX(-50%);
+    background: var(--text); color: var(--bg); padding: .55rem .9rem; border-radius: 999px;
+    box-shadow: var(--shadow-lg); font-size: .88rem; z-index: 50; opacity: 0; transition: opacity .2s, transform .2s;
+    pointer-events: none; max-width: 90vw;
   }
-  .muted { color: #8b93a1; }
-  details summary { cursor: pointer; color: #8b93a1; }
-  #banner { color: #ff9b9b; min-height: 1.2rem; }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px); }
+
+  /* modal */
+  .modal-back { position: fixed; inset: 0; background: rgba(6,8,12,.55); display: grid; place-items: center; z-index: 40; padding: 1rem; }
+  .modal { width: min(560px, 96vw); max-height: 90vh; overflow: auto; padding: 1.2rem; }
+  .modal h3 { margin-top: 0; }
+
+  /* segmented tabs (Mail / Terminal) */
+  .tabs { display: inline-flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 2px; }
+  .tab { border: none; background: transparent; color: var(--muted); padding: .3rem .8rem; border-radius: 999px; font-weight: 600; font-size: .88rem; }
+  .tab.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+
+  /* activity timeline */
+  .timeline { display: flex; flex-direction: column; }
+  .event { display: flex; align-items: center; gap: .5rem; padding: .4rem .6rem; border-bottom: 1px solid var(--border); font-size: .88rem; flex-wrap: wrap; }
+  .event:last-child { border-bottom: none; }
+  .event .t { color: var(--muted); font-size: .74rem; min-width: 3.2rem; font-variant-numeric: tabular-nums; }
+
+  /* topology graph */
+  .edge { stroke: currentColor; stroke-width: 1.6; opacity: .55; }
+  .gnode-t { fill: #fff; font-weight: 700; font-size: 11px; }
+  .gnode-l { fill: var(--muted); font-size: 10px; }
+
+  .hide { display: none !important; }
+
+  /* ---- responsive ------------------------------------------------------ */
+  @media (max-width: 760px) {
+    .brand small { display: none; }
+    .avail .lbl { display: none; }
+    .mail { grid-template-columns: 1fr; }
+    /* On mobile show either the contacts list OR the open thread. */
+    body[data-pane="thread"] .contacts { display: none; }
+    body[data-pane="list"] .thread-wrap { display: none; }
+    .msg { max-width: 88%; }
+    main { padding: .8rem .7rem 4rem; }
+  }
 </style>
 </head>
-<body>
-  <h1>Agentainer</h1>
-  <p class="sub" id="meta">observability &middot; send as user</p>
-
-  <div class="card" id="login">
-    <div class="row">
-      <label for="token">Token</label>
-      <input id="token" class="grow" type="password" placeholder="paste the UI token" />
-      <button id="connect">Connect</button>
+<body data-pane="list">
+  <header id="bar">
+    <div class="brand">
+      <span class="dot">◆</span>
+      <span>Agentainer<small id="swarmMeta">control plane</small></span>
     </div>
-  </div>
-
-  <div id="app" hidden>
-    <div id="banner"></div>
-
-    <div class="card">
-      <div class="row" style="justify-content: space-between;">
-        <strong>Agents</strong>
-        <button id="refresh">Refresh now</button>
-      </div>
-      <table id="agents">
-        <thead>
-          <tr>
-            <th>Name</th><th>Type</th><th>Running</th><th>State</th>
-            <th>Queue</th><th>Unread</th><th>Talks to</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-      <p class="muted" id="sup"></p>
+    <span class="spacer"></span>
+    <div class="avail" id="availWrap" hidden>
+      <span class="lbl" id="availLbl">You: away</span>
+      <label class="switch" title="Receive mail from agents">
+        <input type="checkbox" id="availToggle" />
+        <span class="track"></span><span class="knob"></span>
+      </label>
     </div>
+    <nav id="nav" hidden>
+      <button class="navbtn active" data-view="agents">Agents</button>
+      <button class="navbtn" data-view="activity">Activity</button>
+      <button class="navbtn" data-view="settings">Settings</button>
+    </nav>
+  </header>
 
-    <div class="card">
-      <strong>Send as user</strong>
-      <div class="row" style="margin-top:.5rem;">
-        <select id="to"></select>
-      </div>
-      <textarea id="text" placeholder="Message to send from the user mailbox..."></textarea>
-      <div class="row" style="margin-top:.5rem; justify-content: space-between;">
-        <button id="send">Send</button>
-        <span class="muted" id="sendStatus"></span>
-      </div>
-    </div>
+  <main>
+    <div class="banner" id="banner"></div>
 
-    <div class="card">
-      <details>
-        <summary>Logs</summary>
-        <div class="row" style="margin:.6rem 0;">
-          <select id="logAgent"></select>
-          <input id="logN" type="number" value="50" min="1" style="width: 5rem;" />
-          <button id="loadLogs">Load</button>
-          <label><input type="checkbox" id="autoLogs" /> auto (5s)</label>
+    <!-- login -->
+    <section id="login" class="center">
+      <div class="card">
+        <h2>Connect</h2>
+        <p class="muted" style="margin-top:0">Enter the UI token printed by <code>agentainer serve</code>.</p>
+        <div class="fld">
+          <input id="token" class="field" type="password" placeholder="UI token" autocomplete="off" />
         </div>
-        <pre id="logs">-- no logs loaded --</pre>
-      </details>
-    </div>
-
-    <div class="card">
-      <strong>Terminal snapshot</strong>
-      <div class="row" style="margin-top:.5rem;">
-        <select id="paneAgent"></select>
-        <label><input type="checkbox" id="autoPane" checked /> auto (3s)</label>
+        <div class="rowend">
+          <button class="btn" id="connect">Connect</button>
+        </div>
       </div>
-      <pre id="pane">-- select an agent --</pre>
-    </div>
-  </div>
+    </section>
+
+    <!-- everything below is rendered by app.js -->
+    <section id="view" hidden></section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <div id="modalRoot"></div>
 
   <script src="app.js"></script>
 </body>

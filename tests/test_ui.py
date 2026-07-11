@@ -432,6 +432,425 @@ def test_foreground_serve_branch(cfg):
         t.join(timeout=5)
 
 
+# --------------------------------------------------------------------------
+# mail-app: agent detail / contacts / thread
+# --------------------------------------------------------------------------
+
+
+def _stamp(frm, to, mid, body, t="2026-01-01T00:00:00+00:00"):
+    return f"From: {frm}\nTo: {to}\nId: {mid}\nTime: {t}\n\n{body}"
+
+
+def _put(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def test_api_agent_detail(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        data = json.loads(_get(h, "/api/agent?agent=alice", token="sekret")[1])
+        a = data["agent"]
+        assert a["name"] == "alice"
+        assert a["role"] == "hi"
+        assert a["can_talk_to"] == ["bob"]
+        assert "command" in a and "workdir" in a and "session" in a
+        # missing / unknown
+        assert _get(h, "/api/agent", token="sekret")[0] == 400
+        assert _get(h, "/api/agent?agent=ghost", token="sekret")[0] == 404
+
+
+def test_api_thread_between_agents(cfg):
+    a = cfg.get("alice")
+    b = cfg.get("bob")
+    # alice->bob lands (stamped) in bob's inbox; bob->alice in alice's inbox.
+    _put(cfg.mail_paths(b).inbox / "m1.txt", _stamp("alice", "bob", "m-1", "hello bob", "2026-01-01T00:00:01+00:00"))
+    _put(cfg.mail_paths(a).inbox / "m2.txt", _stamp("bob", "alice", "m-2", "hi alice", "2026-01-01T00:00:02+00:00"))
+    # a stray subdirectory in an incoming dir must be skipped, not parsed.
+    (cfg.mail_paths(a).inbox / "subdir").mkdir()
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        data = json.loads(_get(h, "/api/thread?agent=alice&peer=bob", token="sekret")[1])
+        msgs = data["messages"]
+        assert [m["id"] for m in msgs] == ["m-1", "m-2"]
+        assert msgs[0]["direction"] == "out"  # alice -> bob
+        assert msgs[1]["direction"] == "in"   # bob -> alice
+        assert msgs[0]["body"].strip() == "hello bob"
+        # both sit in an inbox -> delivery status is "delivered"
+        assert msgs[0]["status"] == "delivered" and msgs[1]["status"] == "delivered"
+
+
+def test_api_thread_dedups_by_id(cfg):
+    b = cfg.get("bob")
+    msg = _stamp("alice", "bob", "m-dup", "only once")
+    _put(cfg.mail_paths(b).inbox / "a.txt", msg)
+    _put(cfg.queue_dir / "bob" / "a.txt", msg)  # same id in two dirs
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        data = json.loads(_get(h, "/api/thread?agent=alice&peer=bob", token="sekret")[1])
+        assert len(data["messages"]) == 1
+
+
+def test_api_thread_user_and_system(cfg):
+    a = cfg.get("alice")
+    # alice -> user accumulates in the user queue; user -> alice in alice's inbox.
+    _put(cfg.queue_dir / "user" / "u1.txt", _stamp("alice", "user", "m-u1", "for the user"))
+    _put(cfg.mail_paths(a).inbox / "u2.txt", _stamp("user", "alice", "m-u2", "from the user"))
+    # a system message to alice
+    _put(cfg.mail_paths(a).read / "s1.txt", _stamp("system", "alice", "m-s1", "system notice"))
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        u = json.loads(_get(h, "/api/thread?agent=alice&peer=user", token="sekret")[1])
+        assert {m["id"] for m in u["messages"]} == {"m-u1", "m-u2"}
+        s = json.loads(_get(h, "/api/thread?agent=alice&peer=system", token="sekret")[1])
+        assert [m["id"] for m in s["messages"]] == ["m-s1"]
+
+
+def test_api_thread_missing_and_unknown(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        assert _get(h, "/api/thread?agent=alice", token="sekret")[0] == 400
+        assert _get(h, "/api/thread?agent=ghost&peer=bob", token="sekret")[0] == 404
+        assert _get(h, "/api/thread?agent=alice&peer=ghost", token="sekret")[0] == 404
+
+
+def test_api_contacts(cfg):
+    a = cfg.get("alice")
+    # a stamped incoming from an unknown sender exercises the unknown-name branch
+    # in _incoming_dirs (cfg.get raises -> []), and adds it as a contact.
+    _put(cfg.mail_paths(a).inbox / "g.txt", _stamp("ghost", "alice", "m-g", "boo"))
+    # an unread message from bob bumps bob's unread count
+    _put(cfg.queue_dir / "alice" / "b.txt", _stamp("bob", "alice", "m-b", "queued hi"))
+    # a stray subdirectory in an incoming dir must be skipped when discovering.
+    (cfg.mail_paths(a).inbox / "subdir").mkdir()
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        data = json.loads(_get(h, "/api/contacts?agent=alice", token="sekret")[1])
+        by = {c["name"]: c for c in data["contacts"]}
+        assert by["bob"]["kind"] == "agent"
+        assert by["bob"]["unread"] == 1
+        assert by["bob"]["last_preview"] == "queued hi"
+        assert "system" in by            # always reachable
+        assert by["ghost"]["count"] == 1  # discovered from mail
+        # an agent with NO mailbox dirs at all: contacts still lists its ACL +
+        # system, and unread counting tolerates the missing dirs.
+        bobc = json.loads(_get(h, "/api/contacts?agent=bob", token="sekret")[1])
+        names = {c["name"] for c in bobc["contacts"]}
+        assert "alice" in names and "system" in names
+        assert all(c["unread"] == 0 for c in bobc["contacts"])
+        # missing / unknown
+        assert _get(h, "/api/contacts", token="sekret")[0] == 400
+        assert _get(h, "/api/contacts?agent=ghost", token="sekret")[0] == 404
+
+
+# --------------------------------------------------------------------------
+# config / availability (GET)
+# --------------------------------------------------------------------------
+
+
+def test_api_config_get(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        data = json.loads(_get(h, "/api/config", token="sekret")[1])
+        assert isinstance(data["swarm"], dict)
+        assert {a["name"] for a in data["agents"]} == {"alice", "bob"}
+        assert data["user_available"] is False
+        assert "warnings" in data
+
+
+def test_api_availability_get(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        data = json.loads(_get(h, "/api/availability", token="sekret")[1])
+        assert data["available"] is False
+
+
+# --------------------------------------------------------------------------
+# type (direct pane input)
+# --------------------------------------------------------------------------
+
+
+def test_api_type_success(cfg):
+    with mock_tmux(), mock.patch.object(ui.tmux, "paste_into", return_value=True):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/type", "sekret", {"agent": "alice", "text": "ls\n"})
+            assert code == 200
+            assert json.loads(body)["ok"] is True
+
+
+def test_api_type_swarmerror(cfg):
+    def boom(*a, **k):
+        raise ui.tmux.SwarmError("session down")
+    with mock_tmux(), mock.patch.object(ui.tmux, "paste_into", boom):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/type", "sekret", {"agent": "alice", "text": "x"})
+            assert code == 400
+            assert "session down" in json.loads(body)["error"]
+
+
+def test_api_type_missing_and_unknown_and_badjson(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        assert _post(h, "/api/type", "sekret", {"text": "x"})[0] == 400   # no agent
+        assert _post(h, "/api/type", "sekret", {"agent": "alice"})[0] == 400  # no text
+        assert _post(h, "/api/type", "sekret", {"agent": "ghost", "text": "x"})[0] == 404
+        # invalid json -> 400 (covers _json_body error branch)
+        url = f"http://127.0.0.1:{h.port}/api/type?token=sekret"
+        req = urllib.request.Request(url, data=b"nope", method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req)
+            assert False
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+
+
+# --------------------------------------------------------------------------
+# config / availability (POST -> persist to YAML)
+# --------------------------------------------------------------------------
+
+
+def test_api_config_post_persists(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        code, body = _post(h, "/api/config", "sekret", {"swarm": {"busy_timeout_ms": 12345, "resume": True}})
+        assert code == 200
+        assert json.loads(body)["swarm"]["busy_timeout_ms"] == 12345
+        # the YAML on disk was rewritten and reloads with the new value
+        import config as cfgmod
+        reloaded = cfgmod.load(cfg.path)
+        assert reloaded.busy_timeout_ms == 12345
+        assert reloaded.resume is True
+
+
+def test_api_config_post_missing_and_invalid(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        assert _post(h, "/api/config", "sekret", {})[0] == 400          # no swarm
+        assert _post(h, "/api/config", "sekret", {"swarm": {}})[0] == 400  # empty
+        # a setting that fails validation on reload -> 400
+        code, body = _post(h, "/api/config", "sekret", {"swarm": {"resume": "maybe"}})
+        assert code == 400
+        assert "error" in json.loads(body)
+
+
+def test_api_availability_post(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        code, body = _post(h, "/api/availability", "sekret", {"available": True})
+        assert code == 200 and json.loads(body)["available"] is True
+        assert json.loads(_get(h, "/api/availability", token="sekret")[1])["available"] is True
+        # persisted to YAML
+        import config as cfgmod
+        assert cfgmod.load(cfg.path).user_available is True
+        # back to away
+        assert _post(h, "/api/availability", "sekret", {"available": False})[0] == 200
+        # bad payloads
+        assert _post(h, "/api/availability", "sekret", {})[0] == 400
+        assert _post(h, "/api/availability", "sekret", {"available": "yes"})[0] == 400
+
+
+# --------------------------------------------------------------------------
+# agent add / edit / remove (persist to YAML)
+# --------------------------------------------------------------------------
+
+
+def test_api_agent_add(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        code, body = _post(h, "/api/agent/add", "sekret", {
+            "name": "carol", "type": "claude",
+            "command": "claude --dangerously-skip-permissions",
+            "can_talk_to": ["alice"], "role": "reviewer",
+            "capture": "hook", "periodically_ping_seconds": 30,
+        })
+        assert code == 200 and json.loads(body)["name"] == "carol"
+        import config as cfgmod
+        assert "carol" in cfgmod.load(cfg.path).names()
+
+
+def test_api_agent_add_bad(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        assert _post(h, "/api/agent/add", "sekret", {"name": "x"})[0] == 400  # no command
+        assert _post(h, "/api/agent/add", "sekret", {"command": "claude"})[0] == 400  # no name
+        # duplicate name -> add_agent raises -> 400
+        code, body = _post(h, "/api/agent/add", "sekret",
+                           {"name": "alice", "command": "claude"})
+        assert code == 400
+        assert "alice" in json.loads(body)["error"]
+
+
+def test_api_agent_edit(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        code, _ = _post(h, "/api/agent/edit", "sekret",
+                        {"name": "alice", "fields": {"role": "new role", "can_talk_to": ["bob"]}})
+        assert code == 200
+        import config as cfgmod
+        assert cfgmod.load(cfg.path).get("alice").role == "new role"
+        # bad: no fields
+        assert _post(h, "/api/agent/edit", "sekret", {"name": "alice"})[0] == 400
+        assert _post(h, "/api/agent/edit", "sekret", {"fields": {"role": "x"}})[0] == 400
+        # edit that dangles an ACL reference -> reload fails -> 400
+        code, body = _post(h, "/api/agent/edit", "sekret",
+                           {"name": "alice", "fields": {"can_talk_to": ["ghost"]}})
+        assert code == 400
+
+
+def test_api_agent_remove(cfg, tmp_path):
+    # A config with a standalone agent nothing references, so removal stays valid.
+    sub = tmp_path / "trio"
+    sub.mkdir()
+    trio = load_swarm(sub, """
+- name: alice
+  role: hi
+  can_talk_to: []
+- name: solo
+  role: alone
+  can_talk_to: []
+""", name="trio")
+    with mock_tmux(), ui.run_server(trio, "sekret", host="127.0.0.1", port=0) as h:
+        code, body = _post(h, "/api/agent/remove", "sekret", {"name": "solo"})
+        assert code == 200 and json.loads(body)["name"] == "solo"
+        import config as cfgmod
+        assert "solo" not in cfgmod.load(trio.path).names()
+        # unknown / missing
+        assert _post(h, "/api/agent/remove", "sekret", {"name": "ghost"})[0] == 404
+        assert _post(h, "/api/agent/remove", "sekret", {})[0] == 400
+
+
+def test_api_agent_remove_dangling(cfg):
+    # alice <-> bob reference each other; removing bob dangles alice's ACL -> 400.
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        code, body = _post(h, "/api/agent/remove", "sekret", {"name": "bob"})
+        assert code == 400
+        assert "error" in json.loads(body)
+
+
+def _post_raw(h, path, token, raw_bytes):
+    url = f"http://127.0.0.1:{h.port}{path}?token={token}"
+    req = urllib.request.Request(url, data=raw_bytes, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return resp.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def test_mutation_endpoints_reject_invalid_json(cfg):
+    # Every mutation handler shares _json_body: bad JSON -> 400 (covers the
+    # `if data is None: return` guard in each).
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        for path in ("/api/config", "/api/availability", "/api/agent/add",
+                     "/api/agent/edit", "/api/agent/remove"):
+            assert _post_raw(h, path, "sekret", b"not json") == 400
+
+
+def test_post_unknown_path_404(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        assert _post(h, "/api/nope", "sekret", {})[0] == 404
+
+
+# --------------------------------------------------------------------------
+# telegram bridge endpoints
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_poller():
+    """Keep the module-global poller from leaking between tests."""
+    ui._tg_poller = None
+    yield
+    if ui._tg_poller is not None:
+        try:
+            ui._tg_poller.stop()
+        except Exception:
+            pass
+        ui._tg_poller = None
+
+
+class DummyPoller:
+    def __init__(self):
+        self.stopped = False
+
+    def stop(self):
+        self.stopped = True
+
+
+def test_api_telegram_get_default_off(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        data = json.loads(_get(h, "/api/telegram", token="sekret")[1])
+        assert data["enabled"] is False
+        assert data["has_token"] is False
+        assert data["polling"] is False
+        assert set(data["agents"]) == {"alice", "bob"}
+
+
+def test_api_telegram_post_enables_and_persists(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        code, body = _post(h, "/api/telegram", "sekret", {
+            "enabled": True, "bot_token": "123:ABC", "chat_id": "999",
+            "mirror": ["alice"], "mirror_user": True, "mirror_system": False,
+        })
+        assert code == 200
+        assert json.loads(body)["enabled"] is True and json.loads(body)["has_token"] is True
+        # persisted to YAML + reloadable
+        import config as cfgmod
+        rel = cfgmod.load(cfg.path)
+        assert rel.telegram.enabled is True and rel.telegram.chat_id == "999"
+        assert rel.telegram.mirror == ["alice"]
+        # GET now reports enabled but never leaks the token
+        got = json.loads(_get(h, "/api/telegram", token="sekret")[1])
+        assert got["enabled"] is True and got["has_token"] is True
+        assert "bot_token" not in got
+
+
+def test_api_telegram_post_missing_and_invalid(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        assert _post(h, "/api/telegram", "sekret", {})[0] == 400  # nothing to set
+        # an invalid mirror type fails config reload -> 400
+        code, _ = _post(h, "/api/telegram", "sekret", {"mirror": 5})
+        assert code == 400
+
+
+def test_api_telegram_test_paths(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        # not configured -> 400
+        assert _post(h, "/api/telegram/test", "sekret", {})[0] == 400
+        # enable it
+        _post(h, "/api/telegram", "sekret", {"enabled": True, "bot_token": "1:x", "chat_id": "9"})
+        with mock.patch.object(ui.telegram, "send_message", return_value={"message_id": 1}):
+            assert _post(h, "/api/telegram/test", "sekret", {"text": "hi"})[0] == 200
+        # a TelegramError surfaces as 400
+        def boom(*a, **k):
+            raise ui.telegram.TelegramError("bad token")
+        with mock.patch.object(ui.telegram, "send_message", boom):
+            code, body = _post(h, "/api/telegram/test", "sekret", {})
+            assert code == 400 and "bad token" in json.loads(body)["error"]
+
+
+def test_api_telegram_poll_start_stop_and_restart(cfg):
+    with mock_tmux(), mock.patch.object(ui.telegram, "start_poller", lambda c: DummyPoller()):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            # run before configured -> 400
+            assert _post(h, "/api/telegram/poll", "sekret", {"run": True})[0] == 400
+            _post(h, "/api/telegram", "sekret", {"enabled": True, "bot_token": "1:x", "chat_id": "9"})
+            # start polling
+            code, body = _post(h, "/api/telegram/poll", "sekret", {"run": True})
+            assert code == 200 and json.loads(body)["polling"] is True
+            # a config POST while polling restarts the poller (covers restart branch)
+            assert _post(h, "/api/telegram", "sekret", {"mirror_system": True})[0] == 200
+            assert ui._tg_poller is not None
+            # stop polling
+            code, body = _post(h, "/api/telegram/poll", "sekret", {"run": False})
+            assert code == 200 and json.loads(body)["polling"] is False
+
+
+def test_shutdown_stops_running_poller(cfg):
+    with mock_tmux(), mock.patch.object(ui.telegram, "start_poller", lambda c: DummyPoller()):
+        h = ui.run_server(cfg, "sekret", host="127.0.0.1", port=0)
+        _post(h, "/api/telegram", "sekret", {"enabled": True, "bot_token": "1:x", "chat_id": "9"})
+        _post(h, "/api/telegram/poll", "sekret", {"run": True})
+        poller = ui._tg_poller
+        assert poller is not None
+        h.shutdown()  # must stop the poller
+        assert poller.stopped is True
+        assert ui._tg_poller is None
+
+
+def test_telegram_endpoints_reject_invalid_json(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        for path in ("/api/telegram", "/api/telegram/test", "/api/telegram/poll"):
+            assert _post_raw(h, path, "sekret", b"not json") == 400
+
+
 def test_server_handle_shutdown_and_url(cfg):
     with mock_tmux():
         h = ui.run_server(cfg, "sekret", host="127.0.0.1", port=0)

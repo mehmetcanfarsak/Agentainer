@@ -29,6 +29,19 @@ swarm:
   busy_timeout_ms: 120000       # mark a silent agent idle after this long
   user_available: false         # the human mailbox starts away (set `agentainer user available`)
 
+# Optional Telegram bridge (off by default). When enabled, the orchestrator
+# mirrors mail to a Telegram chat over HTTPS (stdlib only, no dependency), and a
+# Telegram reply to a mirrored message routes back into the swarm as `user` mail.
+# Create a bot with @BotFather for the token; get your chat id from @userinfobot.
+# It is easiest to set all of this from the UI (`agentainer serve` -> Settings).
+# telegram:
+#   enabled: true
+#   bot_token: "123456:ABC-DEF..."   # keep this secret; it is a credential
+#   chat_id: "123456789"             # the chat/user id to send to & accept replies from
+#   mirror: "*"                      # "*"/all, or a list of agent names to mirror
+#   mirror_user: true                # also mirror mail addressed to you (default true)
+#   mirror_system: false             # mirror system pings/bounces too (default false)
+
 defaults:
   # capture: how the orchestrator knows a turn finished.
   #   hook  -> per-type hook/notify (claude Stop hook, codex `notify`)  [default for those types]

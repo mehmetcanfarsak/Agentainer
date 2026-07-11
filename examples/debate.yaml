@@ -1,4 +1,4 @@
-# Debate swarm — two advocates argue opposing sides, moderated by an orchestrator.
+# 💬 Debate swarm — two advocates argue opposing sides, moderated by an orchestrator.
 # Real agents: the `command:` lines launch the actual CLIs. For a key-free demo, swap each for a mock bash loop.
 swarm:
   name: debate

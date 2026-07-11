@@ -1,5 +1,5 @@
 # =============================================================================
-# TDD ping-pong -- the classic red/green pair, but the two roles live in
+# 🔴🟢 TDD ping-pong -- the classic red/green pair, but the two roles live in
 # separate agents that pass a test file back and forth via the mail model.
 #
 #   cp examples/tdd-pingpong.yaml my-tdd.yaml

@@ -69,6 +69,39 @@ def test_new_message_id_format():
     assert len(mid) == 2 + 8  # "m-" + 8 hex
 
 
+def test_standby_prompt_includes_role_and_paths(tmp_runtime):
+    a = make_agent(tmp_runtime, "a", ["b", "system", "user"], role="You are A.")
+    text = mailmod.standby_prompt(tmp_runtime, a)
+    # role is delivered up front, and the standby notice frames it as no-task-yet.
+    assert "You are A." in text
+    assert "initialization message" in text
+    assert "No task has been assigned to you yet" in text
+    assert "do NOT send" in text
+    # Principle 3: exact mailbox paths are stated, not assumed.
+    mp = tmp_runtime.mail_paths(a)
+    assert str(mp.inbox) in text
+    assert str(mp.outbox) in text
+    assert str(mp.read) in text
+    # allowed recipients exclude the reserved 'system' virtual mailbox.
+    assert "You can message: b, user" in text
+    # The protocol must tell the agent to STOP after sending (pickup is
+    # stop-triggered) -- otherwise a model that writes mail and then polls its
+    # inbox for the reply holds its own delivery and wedges the swarm.
+    assert "TURN IS DONE" in text
+    assert "stop and wait" in text
+    assert "Never poll your inbox" in text
+
+
+def test_standby_prompt_roleless_agent(tmp_runtime):
+    a = make_agent(tmp_runtime, "a", [], role="")
+    text = mailmod.standby_prompt(tmp_runtime, a)
+    assert "initialization message" in text
+    assert "standing role has not been set" in text
+    assert "(no one yet)" in text
+
+
+
+
 def test_format_header_with_and_without_re():
     h = mailmod.format_header("alice", "bob", "m-1", "2026-01-01T00:00:00+00:00")
     assert "From: alice" in h
@@ -210,6 +243,10 @@ def test_nudge_builds_text_and_pastes(tmp_runtime):
         assert str(mp.outbox) in text
         assert "bob" in text and "user" in text
         assert "You can message:" in text
+        # The nudge must instruct the agent to STOP after sending, so the
+        # stop-triggered outbox sweep can deliver the mail (see standby_prompt).
+        assert "TURN IS DONE" in text
+        assert "Do not poll your inbox" in text
 
     with mock.patch.object(tmuxmod, "paste_into", return_value=False) as p:
         assert mailmod.nudge(cfg, "alice") is False

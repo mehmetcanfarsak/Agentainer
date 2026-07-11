@@ -1,13 +1,13 @@
-# Changelog
+# 📝 Changelog
 
 All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] — 2026-07-11
+## 🎉 [2.0.0] — 2026-07-11
 
-### Added
+### ✨ Added
 - **Ground-up rewrite around a file-based mail model.** Agents receive mail by
   *reading a file* (`inbox/`) and send by *writing a file* (`outbox/<name>/`); the
   orchestrator owns all routing, ACL, message IDs, threading, read-state,
@@ -38,14 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **100% line coverage** across all `lib/` modules via mock (bash-loop) agents,
   no API keys.
 
-### Changed
+### 🔧 Changed
 - Branding: "swarm" retired — it's **Agentainer** everywhere (config is
   `agentainer.yaml`, runtime dir `.agentainer/`, env `AGENTAINER_HOME`).
 - `can_talk_to` ACL is now enforced at routing time (a disallowed send is bounced
   as `system` mail into `failed/`), and `user`/`system` are reserved virtual
   mailboxes.
 
-### Removed
+### 🗑️ Removed
 - v1's tagged-envelope messaging, reply-reminder subsystem, and `broadcast`.
 
 [2.0.0]: https://github.com/mehmetcanfarsak/Agentainer/releases/tag/v2.0.0

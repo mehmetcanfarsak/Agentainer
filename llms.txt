@@ -1,18 +1,18 @@
-# Agentainer
+# 🐝 Agentainer
 
 > Zero-dependency multi-agent orchestrator with a file-based mail model. Launch
 > Claude Code, Codex, Gemini, or Hermes each in its own tmux session; let them
 > message each other only where `can_talk_to` allows. No runtime dependencies,
 > no API keys required to exercise the mechanics.
 
-## What it is
+## 🧭 What it is
 Agentainer v2 replaces v1's fragile "tagged XML envelope inside prose" messaging
 with a **file-based mail model**: agents *read a file* to receive and *write a
 file* to send. The orchestrator owns all hard logic — routing, ACL, message IDs,
 threading, read-state, queueing, retries, availability, the durable log. The
 model only reads and writes natural-language files.
 
-## Core model (two verbs, four folders)
+## 📬 Core model (two verbs, four folders)
 - Agents communicate by reading/writing files under their mail dir.
 - `inbox/` — the **one** current unread message (orchestrator releases one at a time).
 - `outbox/<name>/` — write here to send to `<name>`; read `<name>/about.md` for a contact card.
@@ -20,11 +20,11 @@ model only reads and writes natural-language files.
 - `sent/` — the agent's own record of delivered mail (orchestrator moves it here).
 - `failed/` — mail bounced by the orchestrator (ACL violation, etc.), with a `system` explanation.
 
-## Why a rewrite
+## 🔁 Why a rewrite
 v1 scraped messages out of a fullscreen-TUI pane. That was unreliable across LLMs.
 The v2 mail model works on nearly every tool-calling model, including weak ones.
 
-## Quick start
+## 🚀 Quick start
 ```
 cp examples/quickstart.yaml my-swarm.yaml
 agentainer up       -c my-swarm.yaml
@@ -37,14 +37,14 @@ agentainer down     -c my-swarm.yaml
 The quickstart uses `bash` loop "mock agents" (no API keys) so you can watch the
 mailroom route mail safely. Swap each `command` for a real agent CLI to run for real.
 
-## Key invariants
+## 🔒 Key invariants
 - Zero runtime dependencies (Python 3 + bash + tmux; PyYAML optional, bundled `minyaml` fallback).
 - `can_talk_to` ACL is cooperative, documented honestly, not an OS boundary.
 - `user`/`system` are reserved virtual mailboxes.
 - Liveness supervisor heartbeat retained (no event-only redesign).
 - Durable JSONL event log is the source of truth for history.
 
-## Commands
+## 🛠️ Commands
 - `validate` — resolve and print the config; launch nothing.
 - `up` — create dirs + mailbox folders, install per-type turn-detection, open one tmux session per agent, send the role.
 - `down` / `restart` — tear down / down+up.
@@ -53,25 +53,25 @@ mailroom route mail safely. Swap each `command` for a real agent CLI to run for 
 - `user` — toggle `user` availability (`available`/`away`/`inbox`/`send`).
 - `queue` / `inbox` / `idle` — inspect pending mail, current inbox, idle agents.
 - `hook` / `watch` / `supervise` — turn-completion hook, live pane watch, liveness supervisor.
-- `serve` — HTTP control-plane UI (observability + send-as-user) on `127.0.0.1`; token required for non-loopback.
+- `serve` — mail-app control-plane UI on `127.0.0.1` (per-agent threaded mail rendered as markdown with delivery status, reply as `user`, activity timeline + topology graph, live tmux pane + direct type-in, availability toggle, swarm-settings & agent add/edit/delete written back to YAML, and an optional stdlib Telegram bridge that mirrors mail out and routes phone replies back as `user` mail); token required for non-loopback.
 - `add <name> --type T --command C --can-talk-to X` — add an agent to the config and bring it up.
 - `edit <name> -s key=value` — edit an agent's fields and reconcile.
 - `remove <name>` — remove an agent and stop its session.
 - `reconcile` — start agents missing from the running set / stop orphaned sessions.
 
-## Control-plane UI (P2–P3)
+## 🖥️ Control-plane UI (P2–P3)
 `agentainer serve -c swarm.yaml --port 8080 --token <secret>` serves a zero-dependency
 UI (stdlib `http.server` + one vanilla-JS page; no framework, no build). It shows
 swarm/agent status, logs, inbox, queue, a live terminal snapshot of each agent's tmux
 pane, and lets you inject mail as the `user` mailbox. Binds `127.0.0.1` by default;
 a token is required for any non-loopback bind (the UI is a control plane).
 
-## Dynamic reconcile (P4)
+## 🔄 Dynamic reconcile (P4)
 Change the swarm without a full teardown: `add`/`remove`/`edit` rewrite `agentainer.yaml`
 with a stdlib-only YAML emitter (works with or without PyYAML) and then `reconcile` the
 change into effect.
 
-## Verified CLI behaviours (do not "simplify" these away)
+## ✅ Verified CLI behaviours (do not "simplify" these away)
 These are observed, load-bearing behaviours of the shipping CLI. An LLM patching or
 "tidying" a config/command around them will produce a subtly broken swarm — keep them.
 
@@ -111,7 +111,7 @@ These are observed, load-bearing behaviours of the shipping CLI. An LLM patching
 - **The liveness supervisor is always on at `up`.** It reconciles stale-busy, dead, and
   silent-but-alive agents every tick; `status` reports `supervisor: alive|down`.
 
-## Gotchas (the quirks that look like bugs but aren't)
+## ⚠️ Gotchas (the quirks that look like bugs but aren't)
 - **Mail sits in `outbox/<name>/` until the turn ends.** If you `send` as an agent and
   immediately check the recipient's `inbox/`, it may not be there yet — wait for the
   sender's turn to finish (or the next supervisor tick).
@@ -134,14 +134,14 @@ These are observed, load-bearing behaviours of the shipping CLI. An LLM patching
   not support multi-document YAML, anchors, or tags. Keep real configs single-document
   and you'll never notice.
 
-## Project status
+## 📊 Project status
 - **P1 — Mail runtime (CLI-driven)**: ✅ done.
 - **P2 — UI observability**: ✅ done.
 - **P3 — terminal snapshot + send-from-UI**: ✅ done.
 - **P4 — dynamic reconcile (`add`/`remove`/`edit`/`reconcile`)**: ✅ done.
 - 100% line coverage across all core + UI + reconcile modules, via mock agents (no API keys).
 
-## Docs
+## 📚 Docs
 - `ProjectPlan.md` — the design (source of truth).
 - `README.md` — user-facing overview, install, commands, FAQ.
 - v1 reference (read-only): `/root/AgentSwarm/docs/PROJECT-DOCUMENTATION.md`.

@@ -1,5 +1,5 @@
 # =============================================================================
-# Localization -- one SOURCE agent writes the canonical copy; a fan-out of
+# 🌐 Localization -- one SOURCE agent writes the canonical copy; a fan-out of
 # TRANSLATORs each render it into one language and return it to the source.
 #
 #   cp examples/localization.yaml my-i18n.yaml

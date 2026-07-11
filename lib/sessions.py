@@ -10,8 +10,9 @@ helpers ``session_env`` / ``resume_command``, adapted to the v2 branding:
   * the session file moved to ``cfg.sessions_file`` (``.agentainer/sessions.yaml``),
     which ``config.py`` already exposes.
 
-The YAML session file is the bridge that lets ``agentainer up --resume`` reattach
-each agent to its own conversation after a restart. It is written atomically
+The YAML session file is the bridge that lets ``agentainer up`` (resume is the
+default) reattach each agent to its own conversation after a restart. It is
+written atomically
 because the turn-completion hooks write to it concurrently.
 
 Zero runtime dependencies: stdlib + our own ``config`` / ``minyaml`` / ``tmux``
@@ -102,8 +103,9 @@ def write_sessions(cfg: SwarmConfig, agents: dict) -> None:
     cfg.runtime.mkdir(parents=True, exist_ok=True)
     header = (
         "# Agentainer session state -- written automatically as agents work.\n"
-        "# `agentainer up --resume` reads this to reattach each agent to its own\n"
-        "# conversation after a restart. Safe to delete; you then start fresh.\n"
+        "# `agentainer up` reads this to reattach each agent to its own\n"
+        "# conversation after a restart (resume is the default; `remove-session`\n"
+        "# wipes it for a clean start). Safe to delete; you then start fresh.\n"
     )
     body = yaml_dump(
         {

@@ -222,6 +222,37 @@ def remove_agent(cfg, name) -> "cfgmod.SwarmConfig":
     return cfgmod.load(cfg.path)
 
 
+def edit_swarm(cfg, **fields) -> "cfgmod.SwarmConfig":
+    """Update swarm-level settings on disk and return a re-loaded SwarmConfig.
+
+    Values arrive already typed (bools/ints/strings from the JSON control plane),
+    so -- unlike ``edit_agent`` -- they are written through verbatim. Writing uses
+    the stdlib emitter so the no-PyYAML path stays live.
+    """
+    raw = load_raw(cfg.path)
+    swarm = dict(raw.get("swarm") or {})
+    for k, v in fields.items():
+        swarm[k] = v
+    raw["swarm"] = swarm
+    write_raw(cfg.path, raw)
+    return cfgmod.load(cfg.path)
+
+
+def edit_telegram(cfg, **fields) -> "cfgmod.SwarmConfig":
+    """Update the top-level ``telegram:`` block on disk; return a reloaded config.
+
+    Values arrive already typed from the JSON control plane, so they are written
+    through verbatim (the stdlib emitter keeps the no-PyYAML path live).
+    """
+    raw = load_raw(cfg.path)
+    tg = dict(raw.get("telegram") or {})
+    for k, v in fields.items():
+        tg[k] = v
+    raw["telegram"] = tg
+    write_raw(cfg.path, raw)
+    return cfgmod.load(cfg.path)
+
+
 def edit_agent(cfg, name, **fields) -> "cfgmod.SwarmConfig":
     """Update *name*'s fields on disk and return a re-loaded SwarmConfig.
 

@@ -195,7 +195,8 @@ def start_agent(cfg, agent, extra_env=None, resume_cmd: str | None = None) -> No
 
     Creates the workdir (when allowed), writes the turn-state, exports the
     session environment, runs the agent command, and returns. The first prompt
-    (agent.role) is pasted by the caller once the pane is ready.
+    (the standby message: agent.role wrapped with a "wait until notified" notice)
+    is pasted by the caller once the pane is ready.
     """
     resume = resume_cmd is not None
     if not agent.workdir.is_dir():
@@ -234,32 +235,39 @@ def start_agent(cfg, agent, extra_env=None, resume_cmd: str | None = None) -> No
 
 
 def launch_agent_full(cfg, agent, resume_cmd: str | None = None) -> None:
-    """Start *agent* in a tmux session AND deliver its first prompt (the role).
+    """Start *agent* in a tmux session AND deliver its first prompt (standby).
 
-    Combines ``start_agent`` with the readiness-wait + role paste that used to
-    live in a separate loop in ``cmd_up``. Shared with the P4 reconcile path so a
-    newly-added agent boots identically to ``up``. A resumed agent gets its
-    session recreated but no first prompt (its prior conversation is restored).
+    Combines ``start_agent`` with the readiness-wait + standby-prompt paste. The
+    first prompt is ``mail.standby_prompt`` -- the agent's role wrapped with a
+    "no task yet, don't send anything, you'll be notified when a real task
+    arrives" notice -- so a fresh swarm doesn't immediately start peers mailing
+    each other. Shared with the P4 reconcile path so a newly-added agent boots
+    identically to ``up``. A resumed agent gets its session recreated but no
+    first prompt (its prior conversation is restored).
     """
     extra_env = hooks.install_turn_detection(agent)
     start_agent(cfg, agent, extra_env, resume_cmd)
     if resume_cmd is not None:
         info(f"{agent.name}: resumed, not re-sending the first prompt")
         return
-    if not agent.role:
-        return
+    # The first prompt is a STANDBY message: the agent's role (identity + mailbox
+    # protocol) wrapped with an explicit "no task yet -- do NOT send anything,
+    # you'll be notified when a real task arrives" notice. This keeps a proactive
+    # model from mailing its peers the instant the swarm comes up, before any
+    # human-assigned task exists. See mail.standby_prompt.
     try:
         if agent.ready_probe and not tmux.wait_until_ready(cfg, agent):
             warn(
                 f"{agent.name}: input box never responded within "
                 f"{cfg.ready_timeout_ms}ms; sending the prompt anyway"
             )
-        if tmux.paste_into(cfg, agent.session, agent.role):
+        first = mail.standby_prompt(cfg, agent)
+        if tmux.paste_into(cfg, agent.session, first):
             turn.mark_turn_started(cfg, agent.name, "user")
             info(f"sent first prompt to {agent.name}")
         else:
             warn(f"{agent.name}: first prompt may not have been delivered")
-        log.log_event(cfg, agent.name, "first_prompt", text=agent.role)
+        log.log_event(cfg, agent.name, "first_prompt", text=first)
     except tmux.SwarmError as exc:
         warn(f"{agent.name}: could not send first prompt: {exc}")
     time.sleep(cfg.send_delay_ms / 1000.0)
@@ -287,6 +295,11 @@ def cmd_up(args) -> int:
     setup_holder = tmux.configure_tmux(cfg)
     mail.init_mailboxes(cfg)
 
+    # Resume is the default (see SwarmConfig.resume); `--no-resume` opts out and
+    # `swarm.resume: false` in the config disables it. `explicit_resume` tracks
+    # whether the operator asked for it on purpose, so we only nag about a missing
+    # conversation when they did -- a default first launch is silent.
+    explicit_resume = args.resume is True
     resume = cfg.resume if args.resume is None else args.resume
     recorded = sessions.read_sessions(cfg) if resume else {}
 
@@ -303,7 +316,11 @@ def cmd_up(args) -> int:
         if resume:
             session_id = (recorded.get(agent.name) or {}).get("session_id")
             if not session_id:
-                warn(f"{agent.name}: no recorded conversation; starting a fresh one")
+                if explicit_resume:
+                    warn(
+                        f"{agent.name}: no recorded conversation; starting a fresh one"
+                    )
+                # Implicit default resume with nothing recorded: start fresh, quietly.
             else:
                 resume_cmd = sessions.resume_command(cfg, agent, session_id)
                 if resume_cmd:
@@ -360,6 +377,55 @@ def cmd_restart(args) -> int:
     cmd_down(args)
     args.restart = True
     return cmd_up(args)
+
+
+def cmd_remove_session(args) -> int:
+    """Delete every piece of Agentainer-generated state for the swarm.
+
+    This is the escape hatch from the default-resume behaviour: after
+    ``remove-session`` the next ``up`` finds no recorded conversations and starts
+    fresh for every agent.
+
+    It removes two categories of state (both gitignored, never shipped -- see
+    CLAUDE.md): the orchestrator runtime ``.agentainer/`` (sessions.yaml with the
+    conversation ids, the per-agent queue, turn state, the durable log, run dir)
+    and each agent's five mailbox folders (inbox/outbox/read/sent/failed) where any
+    in-flight mail lives. It never touches the agent workspaces' own files (source
+    code) or the config.
+
+    Refuses while any agent (or the supervisor) is still running, because pulling
+    state out from under a live agent corrupts it -- ``down`` first.
+    """
+    cfg = cfgmod.load(args.config)
+
+    if shutil.which("tmux"):
+        for agent in cfg.agents:
+            if tmux.session_exists(agent.session):
+                die(
+                    f"{agent.name} is still running -- run `down` first, "
+                    "then `remove-session`"
+                )
+        if _supervisor_alive(cfg):
+            die("the liveness supervisor is still running -- run `down` first")
+
+    removed: list[Path] = []
+    if cfg.runtime.exists():
+        shutil.rmtree(cfg.runtime)
+        removed.append(cfg.runtime)
+    for agent in cfg.agents:
+        mp = cfg.mail_paths(agent)
+        for folder in (mp.inbox, mp.outbox, mp.read, mp.sent, mp.failed):
+            if folder.exists():
+                shutil.rmtree(folder)
+                removed.append(folder)
+
+    if not removed:
+        info("nothing to remove -- the swarm is already clean")
+        return 0
+    info(f"removed Agentainer session data ({len(removed)} path(s)):")
+    for path in removed:
+        info(f"  {path}")
+    return 0
 
 
 def cmd_status(args) -> int:
@@ -730,9 +796,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_up.add_argument("--resume", dest="resume", action="store_true", default=None,
                       help="reattach each agent to the conversation recorded in sessions.yaml")
     p_up.add_argument("--no-resume", dest="resume", action="store_false",
-                      help="start fresh conversations even if swarm.resume is true")
+                      help="start fresh conversations (default: resume the recorded ones)")
     p_up.add_argument("--restart", action="store_true", help="kill and recreate existing sessions")
     p_up.add_argument("--no-supervise", action="store_true", help="do not start the liveness supervisor")
+
+    add("remove-session", cmd_remove_session,
+        "delete all Agentainer state (runtime + mailboxes) so the next up starts fresh")
 
     p_down = add("down", cmd_down, "kill agent tmux sessions")
     p_down.add_argument("--only", help="comma-separated subset of agents to stop")

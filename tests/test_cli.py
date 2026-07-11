@@ -319,6 +319,30 @@ def test_up_supervisor_absent(monkeypatch, tmp_path):
         assert cli.main(["up", "-c", str(cfg.path)]) == 0
 
 
+def test_up_first_prompt_is_standby(monkeypatch, tmp_path):
+    """The first prompt pasted at `up` must be the standby notice, not the raw role."""
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    monkeypatch.setattr(cli.hooks, "install_turn_detection", lambda agent: {})
+    monkeypatch.setattr(cli.tmux, "wait_until_ready", lambda c, a: True)
+    monkeypatch.setattr(cli.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(cli.tmux, "session_exists", lambda s: False)
+    pasted = []
+    monkeypatch.setattr(
+        cli.tmux, "paste_into", lambda cfg, session, text: pasted.append(text) or True
+    )
+    with mock_tmux(has_session=False):
+        assert cli.main(["up", "-c", str(cfg.path), "--no-supervise"]) == 0
+    # two agents launched -> two prompts pasted.
+    assert len(pasted) == 2
+    for text in pasted:
+        assert "initialization message" in text
+        assert "do NOT send" in text
+    # The orchestrator's role is still delivered, wrapped by the standby notice.
+    assert any("You are the orchestrator." in t for t in pasted)
+    # The role-less worker still gets the standby (with its mailbox paths), not nothing.
+    assert any("standing role has not been set" in t for t in pasted)
+
+
 def test_up_nothing_to_start(monkeypatch, tmp_path):
     cfg = build(tmp_path, GENERAL_AGENTS)
     patch_launch(monkeypatch, always=True)
@@ -410,6 +434,107 @@ def test_up_resume(monkeypatch, tmp_path):
     with mock_tmux(has_session=False):
         # --no-supervise avoids needing the supervisor module here.
         assert cli.main(["up", "-c", str(cfg.path), "--resume", "--no-supervise"]) == 0
+
+
+def test_up_resumes_by_default(monkeypatch, tmp_path):
+    """With no flag, `up` reattaches agents that have a recorded conversation."""
+    import sessions as sessions_mod
+
+    cfg = build(tmp_path, RESUME_AGENTS)
+    sessions_mod.write_sessions(
+        cfg, {"claude1": {"type": "claude", "session_id": "S-C", "updated_at": "t"}}
+    )
+    # Capture the resume_cmd handed to launch_agent_full for each agent.
+    launches = []
+    monkeypatch.setattr(
+        cli, "launch_agent_full", lambda c, a, r=None: launches.append((a.name, r))
+    )
+    monkeypatch.setattr(cli.tmux, "session_exists", lambda s: False)
+    with mock_tmux(has_session=False):
+        assert cli.main(["up", "-c", str(cfg.path), "--no-supervise"]) == 0
+    by = {name: rcmd for name, rcmd in launches}
+    assert by["claude1"] is not None  # recorded -> resumed by default
+    assert by["gemini1"] is None      # nothing recorded -> fresh conversation
+
+
+def test_up_no_resume_forces_fresh(monkeypatch, tmp_path):
+    """`--no-resume` overrides the default and starts fresh despite a recording."""
+    import sessions as sessions_mod
+
+    cfg = build(tmp_path, RESUME_AGENTS)
+    sessions_mod.write_sessions(
+        cfg, {"claude1": {"type": "claude", "session_id": "S-C", "updated_at": "t"}}
+    )
+    launches = []
+    monkeypatch.setattr(
+        cli, "launch_agent_full", lambda c, a, r=None: launches.append((a.name, r))
+    )
+    monkeypatch.setattr(cli.tmux, "session_exists", lambda s: False)
+    with mock_tmux(has_session=False):
+        assert cli.main(["up", "-c", str(cfg.path), "--no-resume", "--no-supervise"]) == 0
+    by = {name: rcmd for name, rcmd in launches}
+    assert by["claude1"] is None  # --no-resume wins
+
+
+def test_up_quiet_when_no_recording(monkeypatch, tmp_path, capsys):
+    """A default first launch (nothing recorded) must not nag about resume."""
+    cfg = build(tmp_path, RESUME_AGENTS)
+    monkeypatch.setattr(cli, "launch_agent_full", lambda c, a, r=None: None)
+    monkeypatch.setattr(cli.tmux, "session_exists", lambda s: False)
+    with mock_tmux(has_session=False):
+        assert cli.main(["up", "-c", str(cfg.path), "--no-supervise"]) == 0
+    err = capsys.readouterr().err
+    assert "no recorded conversation" not in err
+
+
+def test_remove_session_clears_runtime_and_mailboxes(monkeypatch, tmp_path):
+    import sessions as sessions_mod
+
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    # Seed the orchestrator runtime (sessions.yaml) + a mailbox with a message.
+    sessions_mod.write_sessions(
+        cfg, {"orchestrator": {"type": "claude", "session_id": "S", "updated_at": "t"}}
+    )
+    mp = cfg.mail_paths(cfg.get("orchestrator"))
+    mp.inbox.mkdir(parents=True, exist_ok=True)
+    (mp.inbox / "m.txt").write_text("stale mail")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(cli.tmux, "session_exists", lambda s: False)
+    monkeypatch.setattr(cli, "_supervisor_alive", lambda c: False)
+
+    assert cfg.runtime.exists()
+    assert (mp.inbox / "m.txt").exists()
+    assert cli.main(["remove-session", "-c", str(cfg.path)]) == 0
+    assert not cfg.runtime.exists()              # sessions.yaml + all runtime state gone
+    assert not mp.inbox.exists()                 # mailbox folders gone
+    assert not mp.inbox.parent.joinpath("outbox").exists()
+
+
+def test_remove_session_refuses_when_running(monkeypatch, tmp_path):
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(cli.tmux, "session_exists", lambda s: True)
+    with pytest.raises(SystemExit):
+        cli.main(["remove-session", "-c", str(cfg.path)])
+
+
+def test_remove_session_refuses_when_supervisor_alive(monkeypatch, tmp_path):
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(cli.tmux, "session_exists", lambda s: False)
+    monkeypatch.setattr(cli, "_supervisor_alive", lambda c: True)
+    with pytest.raises(SystemExit):
+        cli.main(["remove-session", "-c", str(cfg.path)])
+
+
+def test_remove_session_nothing(monkeypatch, tmp_path, capsys):
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(cli.tmux, "session_exists", lambda s: False)
+    monkeypatch.setattr(cli, "_supervisor_alive", lambda c: False)
+    assert not cfg.runtime.exists()
+    assert cli.main(["remove-session", "-c", str(cfg.path)]) == 0
+    assert "nothing to remove" in capsys.readouterr().err
 
 
 def test_down_all(monkeypatch, tmp_path):

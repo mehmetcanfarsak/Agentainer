@@ -114,6 +114,23 @@ class Agent:
 
 
 @dataclass
+class TelegramConfig:
+    """Optional Telegram bridge settings (parsed from a top-level ``telegram:``).
+
+    Off by default. ``mirror`` is ``"*"`` (mirror every agent's mail) or a list of
+    agent names. Mail addressed to ``user`` is mirrored per ``mirror_user`` so the
+    human stays reachable even while "away"; ``system`` noise is off by default.
+    """
+
+    enabled: bool = False
+    bot_token: str = ""
+    chat_id: str = ""
+    mirror: Any = "*"
+    mirror_user: bool = True
+    mirror_system: bool = False
+
+
+@dataclass
 class SwarmConfig:
     path: Path
     name: str
@@ -127,13 +144,17 @@ class SwarmConfig:
     supervise_interval_ms: int = 15000
     ready_timeout_ms: int = 60000
     busy_timeout_ms: int = 900000
-    resume: bool = False
+    # Resume is ON by default: `up` reattaches each agent to the conversation
+    # recorded in .agentainer/sessions.yaml. Opt out with `swarm.resume: false`
+    # in the config, or `agentainer up --no-resume`, or `agentainer remove-data`.
+    resume: bool = True
     user_available: bool = False
     pane_idle_ms: int = 2500
     pane_poll_ms: int = 700
     pane_scrollback: int = 400
     tmux_history_limit: int = 50000
     tmux_mouse: bool = True
+    telegram: "TelegramConfig" = field(default_factory=TelegramConfig)
     warnings: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -222,6 +243,31 @@ def _as_str_map(value: Any, ctx: str) -> dict[str, str]:
     if not isinstance(value, dict):
         raise ConfigError(f"{ctx}: expected a mapping")
     return {str(k): str(v) for k, v in value.items()}
+
+
+def _parse_mirror(value: Any) -> Any:
+    """Normalise ``telegram.mirror``: ``*``/``all``/None -> ``"*"``; else a list."""
+    if value is None:
+        return "*"
+    if isinstance(value, str):
+        return "*" if value.strip().lower() in ("*", "all") else [value]
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    raise ConfigError("telegram.mirror: expected '*', 'all', or a list of agent names")
+
+
+def _load_telegram(data: dict) -> "TelegramConfig":
+    raw = data.get("telegram") or {}
+    if not isinstance(raw, dict):
+        raise ConfigError("`telegram:` must be a mapping")
+    return TelegramConfig(
+        enabled=_as_bool(raw.get("enabled"), False, "telegram.enabled"),
+        bot_token=str(raw.get("bot_token") or ""),
+        chat_id=str(raw.get("chat_id") or ""),
+        mirror=_parse_mirror(raw.get("mirror")),
+        mirror_user=_as_bool(raw.get("mirror_user"), True, "telegram.mirror_user"),
+        mirror_system=_as_bool(raw.get("mirror_system"), False, "telegram.mirror_system"),
+    )
 
 
 def _expand_path(raw: Any, ctx: str, name: str, root: Path, swarm_name: str,
@@ -541,7 +587,7 @@ def load(path: str | os.PathLike) -> SwarmConfig:
         send_delay_ms=int(swarm.get("send_delay_ms", 150)),
         ready_timeout_ms=int(swarm.get("ready_timeout_ms", 60000)),
         busy_timeout_ms=int(swarm.get("busy_timeout_ms", 900000)),
-        resume=_as_bool(swarm.get("resume"), False, "swarm.resume"),
+        resume=_as_bool(swarm.get("resume"), True, "swarm.resume"),
         user_available=_as_bool(
             swarm.get("user_available"), False, "swarm.user_available"
         ),
@@ -552,5 +598,6 @@ def load(path: str | os.PathLike) -> SwarmConfig:
         tmux_mouse=_as_bool(swarm.get("tmux_mouse"), True, "swarm.tmux_mouse"),
         supervise=_as_bool(swarm.get("supervise"), True, "swarm.supervise"),
         supervise_interval_ms=int(swarm.get("supervise_interval_ms", 15000)),
+        telegram=_load_telegram(data),
     )
     return cfg

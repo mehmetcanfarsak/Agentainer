@@ -1,11 +1,11 @@
-# Security Policy
+# 🛡️ Security Policy
 
-## Supported versions
+## 🔖 Supported versions
 
 Only the latest `2.x` release line receives security fixes. Older lines are not
 patched.
 
-## Reporting a vulnerability
+## 🔐 Reporting a vulnerability
 
 **Please do not open a public GitHub issue for security vulnerabilities.**
 
@@ -20,7 +20,7 @@ or email the maintainer. Include:
 You can expect an acknowledgement within a few days. Once the issue is confirmed
 and a fix is ready, we will coordinate disclosure with you.
 
-## Scope & trust model
+## 🔍 Scope & trust model
 
 Agentainer is an **orchestrator that runs other agent CLIs in `tmux` sessions.**
 Be aware of its threat model before deploying it:
@@ -40,7 +40,7 @@ Be aware of its threat model before deploying it:
 - **Disposable `root`.** Run swarms under a throwaway `root` so an agent that goes
   rogue is contained to that workspace.
 
-## Supply chain
+## 🔗 Supply chain
 
 Releases are published to npm from GitHub Releases using
 `.github/workflows/publish.yml`, which publishes with

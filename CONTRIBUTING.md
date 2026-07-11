@@ -1,10 +1,10 @@
-# Contributing to Agentainer
+# 🤝 Contributing to Agentainer
 
 Thanks for your interest in improving Agentainer! This project is a
 zero-dependency multi-agent orchestrator; most of its value is in being correct,
 boring, and unattended-friendly. A few conventions keep it that way.
 
-## Ground rules
+## 📏 Ground rules
 
 1. **Zero runtime dependencies, forever.** The runtime is Python 3 + bash + tmux.
    PyYAML is optional (a bundled `minyaml` fallback must keep working without it).
@@ -21,7 +21,7 @@ boring, and unattended-friendly. A few conventions keep it that way.
 4. **`package.json` is the single source of truth for version.** Tag releases as
    `v<version>` so the publish workflow's tag/version check passes.
 
-## Getting started
+## 🚀 Getting started
 
 ```bash
 git clone <repo> && cd Agentainer
@@ -37,7 +37,7 @@ Run the key-free end-to-end smoke test (spins up a mock swarm in tmux):
 bash tests/validate.sh
 ```
 
-## Before you open a PR
+## 🔍 Before you open a PR
 
 - `pytest tests/ -q` is green at 100% line coverage:
   `python3 -m coverage run -m pytest tests/ -q && python3 -m coverage report --include='lib/*'`
@@ -46,7 +46,7 @@ bash tests/validate.sh
   `agentainer`, and `bin/agentainer.js`.
 - New behaviour gets a mock-agent test; do not require API keys.
 
-## Commit / branch conventions
+## 🌿 Commit / branch conventions
 
 - Feature work happens on a branch off `main` (or the active release branch); do
   not commit directly to `main` without review.
@@ -54,7 +54,7 @@ bash tests/validate.sh
   decision (D1–D24) when behaviour changes.
 - If code and `ProjectPlan.md` disagree, update the plan first, then the code.
 
-## Reporting bugs & requesting features
+## 🐞 Reporting bugs & requesting features
 
 Please use the GitHub issue templates (`bug_report`, `feature_request`). For
 security issues, follow `SECURITY.md` — do **not** open a public issue.

@@ -143,11 +143,19 @@ def mark_read(cfg: SwarmConfig, sender: str, msg_id: str) -> None:
 
 
 def enqueue(cfg: SwarmConfig, recipient: str, text: str, msg_id: str) -> None:
-    """Write *text* into ``cfg.queue_dir/<recipient>/<msg_id>.txt`` (the queue)."""
+    """Write *text* into ``cfg.queue_dir/<recipient>/<msg_id>.txt`` (the queue).
+
+    After the message is durably queued, best-effort mirror it to Telegram (a
+    no-op unless configured). Mirroring runs AFTER the write and can never raise
+    -- correctness never depends on the network (see lib/telegram.py).
+    """
     with lock.file_lock(cfg, recipient, "mail"):
         q = cfg.queue_dir / recipient
         q.mkdir(parents=True, exist_ok=True)
         (q / f"{msg_id}.txt").write_text(text)
+    import telegram  # lazy: keeps mail's import graph free of the bridge
+
+    telegram.on_enqueued(cfg, recipient, text, msg_id)
 
 
 def rate_limited(cfg: SwarmConfig, a: str, b: str) -> bool:
@@ -250,6 +258,47 @@ def write_contact_cards(cfg: SwarmConfig) -> None:
             )
 
 
+def standby_prompt(cfg: SwarmConfig, agent) -> str:
+    """Build the FIRST message an agent receives at ``up`` (its initialization).
+
+    The agent's standing ``role`` (its identity + how to use the mailbox) is
+    delivered up front, wrapped with an explicit STANDBY notice: no task has been
+    assigned yet, so the agent must NOT initiate any mail. This stops a proactive
+    model from spinning up at startup and mailing its peers before any real task
+    exists -- the human delivers the first task via ``agentainer send``, and the
+    normal nudge is what notifies the agent when that task lands.
+
+    Principle 3: the model is always told its exact mailbox paths, so the standby
+    states them rather than assuming the agent knows them.
+    """
+    mp = cfg.mail_paths(agent)
+    allowed = ", ".join(p for p in agent.can_talk_to if p != "system") or "(no one yet)"
+    notice = (
+        "\n---\n"
+        "This is your initialization message. No task has been assigned to you yet.\n\n"
+        "Do NOT write any file to your outbox/ and do NOT send any message. "
+        "You will be notified (a new message will appear in your inbox) when your "
+        "first real task arrives. Until then, simply wait and take no action.\n\n"
+        "Your mailbox (for when a task arrives):\n"
+        f"  inbox:   {mp.inbox}\n"
+        f"  outbox:  {mp.outbox}   (write a file into outbox/<name>/ to send)\n"
+        f"  read:    {mp.read}    (move a handled message here)\n"
+        f"You can message: {allowed}.\n\n"
+        "HOW TO SEND: write your message as a file into outbox/<name>/ (one file per "
+        "recipient; read outbox/<name>/about.md first). The moment you have written "
+        "your outgoing mail, your TURN IS DONE -- stop and wait. The orchestrator "
+        "delivers it and will notify you (a fresh message appears in your inbox and "
+        "you'll be nudged) when the recipient replies. Never poll your inbox or run a "
+        "loop waiting for a reply; doing so just delays delivery and wedges the swarm."
+    )
+    if agent.role:
+        return agent.role.rstrip() + notice
+    return (
+        "You are an agent in a multi-agent swarm, but your standing role has not "
+        "been set.\n" + notice
+    )
+
+
 def release_next(cfg: SwarmConfig, agent_name: str) -> bool:
     """Release the oldest queued message into *agent_name*'s inbox (one-at-a-time).
 
@@ -260,23 +309,46 @@ def release_next(cfg: SwarmConfig, agent_name: str) -> bool:
     agent = cfg.get(agent_name)
     mp = cfg.mail_paths(agent)
     inbox = mp.inbox
-    inbox.mkdir(parents=True, exist_ok=True)
-    existing = sorted(inbox.iterdir())
-    if existing:
-        # One-at-a-time: a message is already presented; count it as a presentation.
-        _bump_presentations(cfg, agent_name, existing[0].name)
-        return False
-    q = cfg.queue_dir / agent_name
-    if q.exists():
-        files = sorted(f for f in q.iterdir() if f.is_file())
-        if files:
-            oldest = files[0]
-            with lock.file_lock(cfg, agent_name, "mail"):
-                shutil.move(str(oldest), str(inbox / oldest.name))
-            log.log_event(cfg, agent_name, "delivered", id=oldest.name)
-            _set_presentations(cfg, agent_name, oldest.name, 1)
-            return True
-    return False
+    released_id = None
+    # The whole read-decide-move runs under ONE per-recipient lock. It used to
+    # check the inbox / pick files[0] OUTSIDE the lock (only the move was
+    # guarded), so two concurrent release_next(B) calls -- e.g. two agents
+    # both stop and release into B, or a hook firing during a supervisor
+    # tick -- could each observe an empty inbox, each pick files[0], and
+    # either land two messages in one inbox (one-at-a-time breached) or
+    # crash with FileNotFoundError when the other already renamed the file
+    # away. Serialising the decision under the lock removes the TOCTOU.
+    # route_outbound's enqueue already takes this same per-recipient lock,
+    # so there is no new lock-ordering edge (see config/supervisor on the
+    # queue -> pane -> turn-state discipline).
+    with lock.file_lock(cfg, agent_name, "mail"):
+        inbox.mkdir(parents=True, exist_ok=True)
+        existing = sorted(inbox.iterdir())
+        if existing:
+            # One-at-a-time: a message is already presented; count it as a presentation.
+            _bump_presentations(cfg, agent_name, existing[0].name)
+            return False
+        q = cfg.queue_dir / agent_name
+        # q may not exist yet for an agent that has never received mail;
+        # iterdir() would raise, so treat a missing queue as empty.
+        files = sorted(f for f in q.iterdir() if f.is_file()) if q.exists() else []
+        if not files:
+            return False
+        oldest = files[0]
+        try:
+            shutil.move(str(oldest), str(inbox / oldest.name))
+        except FileNotFoundError:
+            # Another process already released this exact file (we lost the
+            # race). The inbox is populated / the file is gone -- there is
+            # nothing for us to release, so treat it as "already presented".
+            # Swallowing this keeps a lost race from crashing the caller,
+            # which -- for the supervisor tick -- would otherwise kill the
+            # liveness heartbeat.
+            return False
+        released_id = oldest.name
+    log.log_event(cfg, agent_name, "delivered", id=released_id)
+    _set_presentations(cfg, agent_name, released_id, 1)
+    return True
 
 
 def nudge(cfg: SwarmConfig, agent_name: str) -> bool:
@@ -294,7 +366,10 @@ def nudge(cfg: SwarmConfig, agent_name: str) -> bool:
         f"When you're done, move that file to {mp.read}.\n"
         f"To send a message, write a file into {mp.outbox}/<name>/ "
         f"(read {mp.outbox}/<name>/about.md to see who they are and whether "
-        f"they're available).\n"
+        f"they're available). The moment you've written your outgoing mail, your "
+        f"TURN IS DONE -- stop and wait; you'll be notified (a new message + nudge) "
+        f"when the recipient replies. Do not poll your inbox or wait for the reply "
+        f"yourself; that only delays delivery.\n"
         f"You can message: {allowed}."
     )
     try:

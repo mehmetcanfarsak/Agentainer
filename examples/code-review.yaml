@@ -1,5 +1,5 @@
 # =============================================================================
-# Code review -- several developers each build a slice and a single REVIEWER
+# 🧐 Code review -- several developers each build a slice and a single REVIEWER
 # checks every one of them. (v1 had a `broadcast` primitive; v2 has no
 # broadcast -- instead the reviewer's `can_talk_to` simply lists all the
 # developers, so it can address each one directly.)

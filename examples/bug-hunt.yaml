@@ -1,5 +1,5 @@
 # =============================================================================
-# Bug hunt -- one orchestrator fans a bug report out to several hunters who
+# 🐛 Bug hunt -- one orchestrator fans a bug report out to several hunters who
 # each investigate a different area, then report findings back.
 #
 #   cp examples/bug-hunt.yaml my-hunt.yaml

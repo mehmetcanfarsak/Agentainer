@@ -203,6 +203,14 @@ def run_supervisor(cfg: SwarmConfig, names: list[str]) -> None:
             if not any(tmux.session_exists(cfg.get(n).session) for n in names):
                 _emit(cfg, "no-watched-sessions", "no watched sessions remain, exiting")
                 return
-            supervise_once(cfg, names, seen_dead)
+            try:
+                supervise_once(cfg, names, seen_dead)
+            except Exception as exc:  # noqa: BLE001 - one agent's failure must not kill the heartbeat
+                # The supervisor exists precisely so one wedged/silent agent
+                # can't take down the swarm. A lost release_next race or a
+                # bad pane read must be logged and survived, never propagated
+                # into the process that keeps the whole swarm alive.
+                log.log_event(cfg, "supervisor", "tick-error", error=str(exc))
+                print(f"supervisor: tick error (continuing): {exc}", file=sys.stderr)
     except KeyboardInterrupt:
         _emit(cfg, "supervisor-interrupted", "interrupted, exiting")

@@ -1,5 +1,5 @@
 # =============================================================================
-# Writers' room -- a single editor coordinates a small stable of writers who
+# ✍️ Writers' room -- a single editor coordinates a small stable of writers who
 # draft sections of a document and hand them back for assembly.
 #
 #   cp examples/writers-room.yaml my-doc.yaml
