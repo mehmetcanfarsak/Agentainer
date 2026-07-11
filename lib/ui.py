@@ -26,6 +26,7 @@ The set of endpoints:
   GET /api/logs?agent=&n=     -> last n JSONL log records (token required)
   GET /api/inbox?agent=       -> current inbox message(s) (token required)
   GET /api/queue?agent=       -> queued message(s) (token required)
+  GET /api/pane?agent=        -> terminal snapshot of an agent's tmux pane (token required)
   POST /api/send              -> body {"to","text"} -> mail.send_as_user
 
 Static assets are token-EXEMPT so the login page can load; every API call and
@@ -189,6 +190,8 @@ class UIHandler(BaseHTTPRequestHandler):
             self._api_inbox()
         elif path == "/api/queue":
             self._api_queue()
+        elif path == "/api/pane":
+            self._api_pane()
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -338,6 +341,23 @@ class UIHandler(BaseHTTPRequestHandler):
                     first = text.splitlines()[0] if text.strip() else ""
                     msgs.append({"file": f.name, "text": first})
         self._send_json(200, {"agent": agent, "queue": msgs})
+
+    # -- API: pane (terminal snapshot) ---------------------------------------
+
+    def _api_pane(self) -> None:
+        qs = parse_qs(urlparse(self.path).query)
+        agent = qs.get("agent", [None])[0]
+        if not agent:
+            self._send_json(400, {"error": "missing agent"})
+            return
+        try:
+            a = self.cfg.get(agent)
+        except Exception:
+            self._send_json(404, {"error": "unknown agent"})
+            return
+        # capture_pane returns "" when the session is down / tmux errors, so the
+        # UI just renders an empty pane rather than failing the request.
+        self._send_json(200, {"agent": agent, "pane": tmux.capture_pane(self.cfg, a)})
 
     # -- API: send ------------------------------------------------------------
 

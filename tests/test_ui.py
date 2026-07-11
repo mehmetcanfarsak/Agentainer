@@ -273,6 +273,39 @@ def test_api_queue_missing_and_unknown(cfg):
 
 
 # --------------------------------------------------------------------------
+# pane (terminal snapshot)
+# --------------------------------------------------------------------------
+
+
+def test_api_pane_success(cfg):
+    with mock_tmux(pane="agent@box:~/work# ls\nREADME.md  src/\n"), ui.run_server(
+        cfg, "sekret", host="127.0.0.1", port=0
+    ) as h:
+        data = json.loads(_get(h, "/api/pane?agent=alice", token="sekret")[1])
+        assert data["agent"] == "alice"
+        assert "README.md" in data["pane"]
+
+
+def test_api_pane_empty_when_session_down(cfg):
+    # capture_pane returns "" when the session is down / tmux errors -- the UI
+    # renders an empty pane rather than failing the request.
+    with mock_tmux(has_session=False, returncode=1), ui.run_server(
+        cfg, "sekret", host="127.0.0.1", port=0
+    ) as h:
+        data = json.loads(_get(h, "/api/pane?agent=alice", token="sekret")[1])
+        assert data["agent"] == "alice"
+        assert data["pane"] == ""
+
+
+def test_api_pane_missing_and_unknown(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        code, _ = _get(h, "/api/pane", token="sekret")
+        assert code == 400
+        code, _ = _get(h, "/api/pane?agent=ghost", token="sekret")
+        assert code == 404
+
+
+# --------------------------------------------------------------------------
 # send
 # --------------------------------------------------------------------------
 

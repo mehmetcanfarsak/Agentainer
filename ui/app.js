@@ -36,8 +36,11 @@
     tbody.innerHTML = "";
     const to = $("to");
     const logAgent = $("logAgent");
+    const paneAgent = $("paneAgent");
+    const prevPane = paneAgent.value;
     to.innerHTML = "";
     logAgent.innerHTML = '<option value="">(all)</option>';
+    paneAgent.innerHTML = "";
 
     (data.agents || []).forEach((a) => {
       const tr = document.createElement("tr");
@@ -62,7 +65,13 @@
       o2.value = a.name;
       o2.textContent = a.name;
       logAgent.appendChild(o2);
+
+      const o3 = document.createElement("option");
+      o3.value = a.name;
+      o3.textContent = a.name;
+      paneAgent.appendChild(o3);
     });
+    if (prevPane) paneAgent.value = prevPane;
   }
 
   function esc(s) {
@@ -135,6 +144,8 @@
         banner("");
         renderStatus(data);
         startPolling();
+        loadPane();
+        startPanePolling();
       })
       .catch((e) => banner("connect failed: " + e.message));
   }
@@ -149,10 +160,31 @@
     if ($("autoLogs").checked) logTimer = setInterval(loadLogs, 5000);
   }
 
+  function loadPane() {
+    const agent = $("paneAgent").value;
+    if (!agent) {
+      $("pane").textContent = "-- select an agent --";
+      return;
+    }
+    api("/api/pane?agent=" + encodeURIComponent(agent))
+      .then((data) => {
+        $("pane").textContent = data.pane || "-- (empty / session down) --";
+      })
+      .catch((e) => ($("pane").textContent = "error: " + e.message));
+  }
+
+  let paneTimer = null;
+  function startPanePolling() {
+    if (paneTimer) clearInterval(paneTimer);
+    if ($("autoPane").checked) paneTimer = setInterval(loadPane, 3000);
+  }
+
   // wire up
   $("connect").addEventListener("click", connect);
   $("refresh").addEventListener("click", refresh);
   $("send").addEventListener("click", send);
   $("loadLogs").addEventListener("click", loadLogs);
   $("autoLogs").addEventListener("change", startLogPolling);
+  $("paneAgent").addEventListener("change", loadPane);
+  $("autoPane").addEventListener("change", startPanePolling);
 })();
