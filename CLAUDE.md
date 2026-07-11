@@ -22,7 +22,15 @@ tool-calling LLM, including weak ones.
 
 ## Status & source of truth
 
-This repo is **greenfield** — right now it contains only the design:
+This repo is **built and verified**, not greenfield. The v2 runtime (P1–P4) is
+implemented, tested at 100% line coverage across all 13 `lib/` modules, ships
+with 11 example swarms under `examples/`, and was proven end-to-end against a
+live `claude` agent (the `chy3` alias): the full
+`user → orchestrator → developer → orchestrator → user` mail loop — including
+ACL bounce — runs with the real model doing file I/O and tool use. The one
+outstanding item is the **release decision** (merge `v2-build` → `main`,
+push to `origin`, tag `v2.0.0`, publish to npm); that is deliberately the
+operator's to make, not done autonomously.
 
 - **`ProjectPlan.md` is the single source of truth for the design.** Read it
   before writing any code. Especially:
@@ -33,8 +41,10 @@ This repo is **greenfield** — right now it contains only the design:
 - The full v1 record is `/root/AgentSwarm/docs/PROJECT-DOCUMENTATION.md` (read-only
   reference for the hard-won behaviour and footguns).
 
-If code and `ProjectPlan.md` disagree, the plan wins until the plan is updated.
-Don't silently drift from it — change the plan first, then the code.
+`ProjectPlan.md` is the *design record*; the code and the test suite are
+authoritative for current behaviour (the plan has intentionally diverged — e.g.
+`broadcast` was dropped, `examples/` was added, the live E2E is done). When
+you change behaviour, update the plan and the relevant docs together.
 
 ## The design in one screen
 
@@ -152,4 +162,12 @@ source-only).
 
 Phased and independently shippable (`ProjectPlan.md` §26): **P1** mail runtime
 (CLI-driven) → **P2** UI observability → **P3** terminal snapshot + send-from-UI →
-**P4** dynamic reconcile (add/delete agents, edit `agentainer.yaml`). Start at P1.
+**P4** dynamic reconcile (add/delete agents, edit `agentainer.yaml`).
+
+**All four phases are complete and committed on branch `v2-build`** (445 tests,
+100% line coverage). The live `chy3` end-to-end test passed: two real `claude`
+agents launched via the `chy3` alias exchanged a task through the file mail
+model (orchestrator read its `inbox/`, wrote a delegation, the `user`-side
+round-trip and ACL bounce both fired). The only remaining step is the release
+decision — **merge/push/tag/publish is reserved and must not happen without
+explicit operator go-ahead.**
