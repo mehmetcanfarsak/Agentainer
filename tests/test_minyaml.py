@@ -284,7 +284,7 @@ def test_expect_eof_raises_on_trailing():
 # --------------------------------------------------------------- parser parity
 
 def test_parity_with_pyyaml_on_shipped_configs():
-    import yaml
+    yaml = pytest.importorskip("yaml")  # parity test needs both parsers
     from pathlib import Path
 
     repo = Path(__file__).resolve().parent.parent
