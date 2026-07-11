@@ -1,0 +1,73 @@
+# =============================================================================
+# Code review -- several developers each build a slice and a single REVIEWER
+# checks every one of them. (v1 had a `broadcast` primitive; v2 has no
+# broadcast -- instead the reviewer's `can_talk_to` simply lists all the
+# developers, so it can address each one directly.)
+#
+#   cp examples/code-review.yaml my-repo.yaml
+#   agentainer up   -c my-repo.yaml
+#   agentainer send -c my-repo.yaml --to reviewer "Review the open PRs, report per dev."
+#   agentainer down -c my-repo.yaml
+#
+# Shape: developers never talk to each other; each talks only to the reviewer,
+# who is the hub. This keeps every critique flowing through one consistent
+# reviewer voice instead of N pairwise arguments.
+#
+#   dev-1 \
+#   dev-2  > reviewer (hub)
+#   dev-3 /
+#
+# Key-free: commands are bash loops. Swap for real CLIs to review real code.
+# =============================================================================
+
+swarm:
+  name: code-review
+  root: ./code-review-workspace
+
+defaults:
+  capture: none
+  can_talk_to: []
+
+agents:
+  - name: reviewer
+    type: claude
+    can_talk_to: [dev_1, dev_2, dev_3, user]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are the REVIEWER -- the hub. When a developer sends you their work
+      (mail in your inbox/), read it and try to break it: wrong logic,
+      unhandled errors, race conditions, data loss, auth holes. Cite file:line.
+      Send each critique back to the specific developer who wrote it (write a file
+      into outbox/<their-name>/). Never let two developers argue with each other
+      directly -- all feedback goes through you. If the human (user) writes to
+      you, answer them.
+
+  - name: dev_1
+    type: codex
+    can_talk_to: [reviewer]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are DEVELOPER 1. Build your slice in your own directory. When a unit
+      of work is done, send the reviewer a short summary (write a file into
+      outbox/reviewer/): what changed, why, and what you are unsure about.
+      Ask for review. Act only on the reviewer's feedback.
+
+  - name: dev_2
+    type: codex
+    can_talk_to: [reviewer]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are DEVELOPER 2. Build your slice in your own directory. When a unit
+      of work is done, send the reviewer a short summary (write a file into
+      outbox/reviewer/): what changed, why, and what you are unsure about.
+      Ask for review. Act only on the reviewer's feedback.
+
+  - name: dev_3
+    type: codex
+    can_talk_to: [reviewer]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are DEVELOPER 3. Build your slice in your own directory. When a unit
+      of work is done, send the reviewer a short summary (write a file into
+      outbox/reviewer/): what changed, why, and what you are unsure about.
+      Ask for review. Act only on the reviewer's feedback.

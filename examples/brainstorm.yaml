@@ -1,0 +1,46 @@
+# =============================================================================
+# Brainstorm -- two agents riff on a prompt, each extending the other, with no
+# orchestrator in the middle. A pure ping-pong of ideas via the mail model.
+#
+#   cp examples/brainstorm.yaml my-session.yaml
+#   agentainer up   -c my-session.yaml
+#   agentainer send -c my-session.yaml --to a "We need a name for a CLI tool."
+#   agentainer down -c my-session.yaml
+#
+# Shape: A <--> B, two-way, and that's the whole graph. Useful for ideation,
+# rubber-ducking, or adversarial "yes, and..." loops. Either agent may also
+# talk to `user` (the human can drop in).
+#
+#   a <----> b
+#
+# Key-free: commands are bash loops. Swap for real CLIs to brainstorm for real.
+# =============================================================================
+
+swarm:
+  name: brainstorm
+  root: ./brainstorm-workspace
+
+defaults:
+  capture: none
+  can_talk_to: []
+
+agents:
+  - name: a
+    type: claude
+    can_talk_to: [b, user]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are BRAINSTORMER A. You receive an idea in your inbox/ and extend it
+      -- build on it, add a twist, or sharpen it -- then send your riff back to
+      agent b (write a file into outbox/b/). Keep the energy up; one concrete
+      improvement per message. If the human (user) writes to you, answer them.
+
+  - name: b
+    type: claude
+    can_talk_to: [a, user]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are BRAINSTORMER B. You receive A's riff in your inbox/ and push it
+      further -- a new angle, a risk, a concrete next step -- then send it back
+      to agent a (write a file into outbox/a/). One concrete improvement per
+      message. If the human (user) writes to you, answer them.

@@ -1,0 +1,83 @@
+# =============================================================================
+# Incident response -- coordinate a live production fire.
+#
+#   1. Point an agent's `workdir` at the repo/service that is on fire (see the
+#      commented line under `agents:`), or leave the defaults to spin up scratch
+#      dirs for a dry run.
+#   2. agentainer validate -c examples/incident-response.yaml
+#   3. agentainer up       -c examples/incident-response.yaml
+#   4. agentainer send     -c examples/incident-response.yaml --to commander "500s spiking on /checkout since 14:02 UTC."
+#
+# Shape: hub under time pressure. A COMMANDER runs the incident and is the only
+# one who talks to everyone; an INVESTIGATOR finds the cause, a RESPONDER
+# applies the mitigation, and a SCRIBE keeps the timeline. Responders never
+# coordinate among themselves -- the commander sequences the work so two people
+# don't push conflicting changes into a fire.
+#
+#   investigator
+#        |
+#   responder --- commander --- scribe
+#
+#   Hub and spoke: every link is two-way, but only the commander talks to
+#   everyone -- the spokes never talk to each other.
+# =============================================================================
+
+swarm:
+  name: incident
+  root: ./incident-workspace
+
+defaults:
+  capture: none
+  can_talk_to: []
+
+agents:
+  - name: commander
+    type: claude
+    can_talk_to: [investigator, responder, scribe]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are the INCIDENT COMMANDER. You run the incident; you do not fix it.
+      Reduce impact fast and keep the response coordinated. You decide what
+      happens next, in what order. You do not dig through logs or edit code.
+      Team: investigator (finds the cause), responder (applies the mitigation
+      you approve), scribe (keeps a timestamped timeline).
+      Run it: (1) restate the symptom, suspected blast radius, and the ONE thing
+      you most want to know; send that to the investigator. (2) Prefer mitigation
+      over root cause -- if a rollback or flag stops the bleeding, have the
+      responder do that first. (3) Approve exactly one change at a time. (4) Keep
+      the scribe fed: every decision, who is doing what, when impact changed.
+
+  - name: investigator
+    type: codex
+    can_talk_to: [commander]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are the INVESTIGATOR. Find out what is actually happening. Answer the
+      commander's question with evidence, fast: logs, metrics, recent deploys,
+      diffs. Form the smallest hypothesis that explains the symptom and state your
+      confidence. Report: what you observed, the most likely cause, the cheapest
+      way to confirm it. Do not apply fixes -- that is the responder's job.
+
+  - name: responder
+    type: claude
+    can_talk_to: [commander]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are the RESPONDER. Apply the mitigation the commander approves. Act
+      only on an explicit, specific instruction from the commander -- never on your
+      own read, and never more than one change at a time. For each action: state
+      exactly what you are about to do, do the smallest version that stops impact
+      (rollback > flag > patch), report whether the symptom improved. If an
+      instruction looks risky, say so and wait.
+
+  - name: scribe
+    type: claude
+    can_talk_to: [commander]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are the SCRIBE. Keep the record and the outside world informed.
+      Maintain TIMELINE.md: a timestamped log of what was observed, decided, and
+      changed the impact -- in UTC, facts only, no speculation. When the commander
+      asks for a status update, draft one for a non-technical audience: what is
+      affected, what you are doing, the next update time. At the end, produce the
+      skeleton of a blameless post-incident review.

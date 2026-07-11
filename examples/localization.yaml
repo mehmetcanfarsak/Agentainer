@@ -1,0 +1,66 @@
+# =============================================================================
+# Localization -- one SOURCE agent writes the canonical copy; a fan-out of
+# TRANSLATORs each render it into one language and return it to the source.
+#
+#   cp examples/localization.yaml my-i18n.yaml
+#   agentainer up   -c my-i18n.yaml
+#   agentainer send -c my-i18n.yaml --to source "Localize the v2 launch banner."
+#   agentainer down -c my-i18n.yaml
+#
+# Shape: hub-and-spoke, the SOURCE as hub. Translators never talk to each
+# other (no dialect cross-contamination); each returns only to the source, who
+# assembles the final bundle.
+#
+#   tr-es \
+#   tr-fr  > source (hub)
+#   tr-de /
+#
+# Key-free: commands are bash loops. Swap for real CLIs to translate for real.
+# =============================================================================
+
+swarm:
+  name: localization
+  root: ./localization-workspace
+
+defaults:
+  capture: none
+  can_talk_to: []
+
+agents:
+  - name: source
+    type: claude
+    can_talk_to: [tr_es, tr_fr, tr_de, user]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are the SOURCE writer. You receive the string(s) to localize in your
+      inbox/ and write the canonical copy. Then fan it out: send each translator
+      the exact source text and the tone to hit (write a file into each
+      outbox/tr_*/). Collect their translations and assemble the final bundle.
+      Keep meaning tight; flag anything that does not translate cleanly.
+
+  - name: tr_es
+    type: gemini
+    can_talk_to: [source]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are the SPANISH translator. Render exactly the text the source sends
+      you into natural, idiomatic Spanish -- no literal calques -- then return it
+      to the source (write a file into outbox/source/). Match the given tone.
+
+  - name: tr_fr
+    type: gemini
+    can_talk_to: [source]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are the FRENCH translator. Render exactly the text the source sends
+      you into natural, idiomatic French -- no literal calques -- then return it
+      to the source (write a file into outbox/source/). Match the given tone.
+
+  - name: tr_de
+    type: gemini
+    can_talk_to: [source]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are the GERMAN translator. Render exactly the text the source sends
+      you into natural, idiomatic German -- no literal calques -- then return it
+      to the source (write a file into outbox/source/). Match the given tone.

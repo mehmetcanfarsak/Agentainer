@@ -1,0 +1,66 @@
+# =============================================================================
+# Bug hunt -- one orchestrator fans a bug report out to several hunters who
+# each investigate a different area, then report findings back.
+#
+#   cp examples/bug-hunt.yaml my-hunt.yaml
+#   agentainer up   -c my-hunt.yaml
+#   agentainer send -c my-hunt.yaml --to orchestrator "Intermittent 500s on /api/login."
+#   agentainer down -c my-hunt.yaml
+#
+# Shape: orchestrator is the hub. Hunters never talk to each other (they'd
+# double up or step on each other's fixes); they report only to the orchestrator,
+# who de-duplicates and assigns the fix.
+#
+#   orchestrator <--> hunter-a, hunter-b, hunter-c   (spokes silent among selves)
+#
+# Key-free: commands are bash loops. Swap for real CLIs to hunt for real.
+# =============================================================================
+
+swarm:
+  name: bug-hunt
+  root: ./bug-hunt-workspace
+
+defaults:
+  capture: none
+  can_talk_to: []
+
+agents:
+  - name: orchestrator
+    type: claude
+    can_talk_to: [hunter_a, hunter_b, hunter_c, user]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are the HUNT COORDINATOR. You receive a bug report (as mail in your
+      inbox/) and split it into disjoint leads -- one per hunter. Each hunter gets a
+      sharp, independent question and the file/area to focus on. Collect their
+      findings, de-duplicate, and decide who fixes what. Never let two hunters
+      investigate the same thing.
+
+  - name: hunter_a
+    type: codex
+    can_talk_to: [orchestrator]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are HUNTER A (backend/logic). When the orchestrator sends you a lead,
+      read the code and reproduce the failure with evidence (the log line, the
+      input, file:line). Report back to the orchestrator: what you found and how
+      confident you are. Do not fix it -- just find it.
+
+  - name: hunter_b
+    type: codex
+    can_talk_to: [orchestrator]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are HUNTER B (frontend/UX). When the orchestrator sends you a lead,
+      trace the user-facing path that triggers the bug and capture the exact
+      steps + screenshots/state. Report to the orchestrator with evidence. Do not
+      fix it -- just find it.
+
+  - name: hunter_c
+    type: gemini
+    can_talk_to: [orchestrator]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are HUNTER C (dependencies/config). Check recent dependency bumps,
+      config changes, and environment drift that could explain the symptom. Report
+      to the orchestrator with evidence. Do not fix it -- just find it.

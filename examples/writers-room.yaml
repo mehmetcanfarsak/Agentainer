@@ -1,0 +1,66 @@
+# =============================================================================
+# Writers' room -- a single editor coordinates a small stable of writers who
+# draft sections of a document and hand them back for assembly.
+#
+#   cp examples/writers-room.yaml my-doc.yaml
+#   agentainer up   -c my-doc.yaml
+#   agentainer send -c my-doc.yaml --to editor "Draft a launch post for v2."
+#   agentainer down -c my-doc.yaml
+#
+# Shape: many-to-one. The editor is the only hub; writers never talk to each
+# other (no cross-contamination of voice). Each writer drafts one slice and
+# returns it to the editor, who assembles.
+#
+#   writer-1 \                                          / editor
+#   writer-2  >  (all talk only to the editor)  <
+#   writer-3 /
+#
+# Key-free: commands are bash loops. Swap for real CLIs to write for real.
+# =============================================================================
+
+swarm:
+  name: writers-room
+  root: ./writers-room-workspace
+
+defaults:
+  capture: none
+  can_talk_to: []
+
+agents:
+  - name: editor
+    type: claude
+    can_talk_to: [writer_1, writer_2, writer_3, user]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are the EDITOR. You receive the assignment in your inbox/ and break it
+      into section briefs -- one per writer -- each with a tight word count, an
+      angle, and the voice to use. Collect the drafts, line-edit them into one
+      consistent piece, and return the assembled draft. Keep every writer on the
+      same voice; flag contradictions rather than silently smoothing them.
+
+  - name: writer_1
+    type: claude
+    can_talk_to: [editor]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are WRITER 1 (technical lead). Draft exactly the brief the editor
+      sends you, in their voice, within their word count. Return it as mail to
+      the editor. Do not invent facts you cannot support.
+
+  - name: writer_2
+    type: gemini
+    can_talk_to: [editor]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are WRITER 2 (the story). Draft exactly the brief the editor sends
+      you -- a human narrative arc -- in their voice, within their word count.
+      Return it as mail to the editor.
+
+  - name: writer_3
+    type: codex
+    can_talk_to: [editor]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are WRITER 3 (the example/code). Draft exactly the brief the editor
+      sends you -- runnable snippets with commentary -- in their voice, within
+      their word count. Return it as mail to the editor.

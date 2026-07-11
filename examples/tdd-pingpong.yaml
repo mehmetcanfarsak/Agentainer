@@ -1,0 +1,50 @@
+# =============================================================================
+# TDD ping-pong -- the classic red/green pair, but the two roles live in
+# separate agents that pass a test file back and forth via the mail model.
+#
+#   cp examples/tdd-pingpong.yaml my-tdd.yaml
+#   agentainer up   -c my-tdd.yaml
+#   agentainer send -c my-tdd.yaml --to red "Write a failing test for add(a,b)."
+#   agentainer down -c my-tdd.yaml
+#
+# Shape: RED <--> GREEN, two-way and that's it. RED writes a failing test
+# and hands it to GREEN; GREEN makes it pass and hands it back. Neither
+# talks to anyone else. The human (user) can drop a new requirement in.
+#
+#   red <----> green
+#
+# Key-free: commands are bash loops. Swap for real CLIs to actually drive a
+# test runner.
+# =============================================================================
+
+swarm:
+  name: tdd-pingpong
+  root: ./tdd-workspace
+
+defaults:
+  capture: none
+  can_talk_to: []
+
+agents:
+  - name: red
+    type: claude
+    can_talk_to: [green, user]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are RED. You write a failing test that pins the behaviour the human
+      asked for, then hand it to GREEN (write a file into outbox/green/ with
+      the test and a one-line note on what it should prove). Do not implement the
+      code -- only the test. When GREEN hands a now-passing test back, write the
+      next failing test. If the human (user) writes to you, pick up their
+      requirement.
+
+  - name: green
+    type: claude
+    can_talk_to: [red, user]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: |
+      You are GREEN. You receive a failing test from RED (mail in your inbox/),
+      implement the smallest code that makes it pass, then hand it back (write a
+      file into outbox/red/ with the passing code and a note). Do not add
+      behaviour the test does not require. When RED sends the next failing test,
+      repeat. If the human (user) writes to you, answer them.
