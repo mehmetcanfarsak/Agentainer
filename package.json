@@ -37,6 +37,8 @@
   "files": [
     "bin/agentainer.js",
     "lib/*.py",
+    "ui/*.html",
+    "ui/*.js",
     "hooks/*.sh",
     "scripts/check-deps.js",
     "agentainer",

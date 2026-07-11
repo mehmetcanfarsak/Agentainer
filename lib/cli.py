@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -34,6 +35,7 @@ import mail  # noqa: E402
 import sessions  # noqa: E402
 import tmux  # noqa: E402
 import turn  # noqa: E402
+import ui  # noqa: E402
 
 # Repo root: AGENTAINER_HOME overrides, else this file's grandparent (lib/..).
 AGENTAINER_HOME = Path(
@@ -666,6 +668,33 @@ def cmd_supervise(args) -> int:
     return 0
 
 
+def gen_ui_token() -> str:
+    """A random auth token for the UI control plane (no token == no remote bind)."""
+    return secrets.token_hex(16)
+
+
+def cmd_serve(args) -> int:
+    """Serve the HTTP control-plane UI (observability + send-from-UI).
+
+    Binds 127.0.0.1 by default; a token is required for any non-loopback bind
+    (enforced inside ``ui.run_server``). The token comes from ``--token``, else
+    ``AGENTAINER_UI_TOKEN``, else a freshly generated one printed to stderr.
+    """
+    cfg = cfgmod.load(args.config)
+    token = args.token or os.environ.get("AGENTAINER_UI_TOKEN") or gen_ui_token()
+    host = args.host or "127.0.0.1"
+    port = args.port or 0
+    handle = ui.run_server(cfg, token, host=host, port=port, background=True)
+    info(f"UI serving at {handle.url}")
+    info(f"UI token: {token}")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        handle.shutdown()
+    return 0
+
+
 # --------------------------------------------------------------------------
 # argument parser
 # --------------------------------------------------------------------------
@@ -725,10 +754,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_user = add("user", cmd_user, "virtual user mailbox: available|away|inbox|send")
     u = p_user.add_subparsers(dest="user_cmd", required=True)
-    u.add_parser("available")
-    u.add_parser("away")
-    u.add_parser("inbox")
+    # Nested subparsers don't inherit the top-level -c, so add it to each.
+    for _p in (u.add_parser("available"), u.add_parser("away"), u.add_parser("inbox")):
+        _p.add_argument("-c", "--config", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     p_usend = u.add_parser("send")
+    p_usend.add_argument("-c", "--config", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     p_usend.add_argument("--to", required=True)
     p_usend.add_argument("--file")
     p_usend.add_argument("message", nargs="*")
@@ -763,6 +793,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_sup = add("supervise", cmd_supervise, "internal: background liveness watchdog")
     p_sup.add_argument("names", nargs="*", help="agents to watch (default: all)")
+
+    p_serve = add("serve", cmd_serve, "serve the HTTP control-plane UI (observability)")
+    p_serve.add_argument("--host", default=None, help="bind host (default: 127.0.0.1)")
+    p_serve.add_argument("--port", type=int, default=0, help="port (default: auto)")
+    p_serve.add_argument("--token", default=None, help="auth token (default: env or random)")
 
     return parser
 
