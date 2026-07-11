@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="380" viewBox="0 0 900 380" role="img" aria-label="Agentainer architecture: agentainer.yaml config drives a CLI core that opens one tmux session per agent; agents read and write mail files that the orchestrator routes">
+  <defs>
+    <linearGradient id="box" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1e293b"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect width="900" height="380" rx="14" fill="#020617"/>
+
+  <text x="32" y="40" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="22" font-weight="700" fill="#e2e8f0">How it fits together</text>
+
+  <!-- config -->
+  <g>
+    <rect x="32" y="70" width="180" height="80" rx="10" fill="url(#box)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="122" y="104" text-anchor="middle" font-family="ui-monospace, monospace" font-size="17" font-weight="700" fill="#7dd3fc">agentainer.yaml</text>
+    <text x="122" y="128" text-anchor="middle" font-family="ui-monospace, monospace" font-size="13" fill="#94a3b8">agents + can_talk_to ACL</text>
+  </g>
+
+  <!-- core cli -->
+  <g>
+    <rect x="360" y="70" width="200" height="80" rx="10" fill="url(#box)" stroke="#4ade80" stroke-width="1.5"/>
+    <text x="460" y="100" text-anchor="middle" font-family="ui-monospace, monospace" font-size="17" font-weight="700" fill="#86efac">agentainer up</text>
+    <text x="460" y="124" text-anchor="middle" font-family="ui-monospace, monospace" font-size="13" fill="#94a3b8">CLI core + supervisor</text>
+  </g>
+
+  <!-- tmux -->
+  <g>
+    <rect x="360" y="210" width="200" height="80" rx="10" fill="url(#box)" stroke="#a855f7" stroke-width="1.5"/>
+    <text x="460" y="240" text-anchor="middle" font-family="ui-monospace, monospace" font-size="17" font-weight="700" fill="#d8b4fe">tmux sessions</text>
+    <text x="460" y="264" text-anchor="middle" font-family="ui-monospace, monospace" font-size="13" fill="#94a3b8">one per agent + workdir</text>
+  </g>
+
+  <!-- mail model -->
+  <g>
+    <rect x="700" y="150" width="170" height="120" rx="10" fill="url(#box)" stroke="#f59e0b" stroke-width="1.5"/>
+    <text x="785" y="182" text-anchor="middle" font-family="ui-monospace, monospace" font-size="15" font-weight="700" fill="#fcd34d">agents read / write</text>
+    <text x="785" y="206" text-anchor="middle" font-family="ui-monospace, monospace" font-size="13" fill="#cbd5e1">inbox/  outbox/</text>
+    <text x="785" y="226" text-anchor="middle" font-family="ui-monospace, monospace" font-size="13" fill="#cbd5e1">read/  sent/</text>
+    <text x="785" y="250" text-anchor="middle" font-family="ui-monospace, monospace" font-size="11" fill="#94a3b8">orchestrator routes</text>
+  </g>
+
+  <!-- arrows -->
+  <line x1="212" y1="110" x2="352" y2="110" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="460" y1="150" x2="460" y2="202" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="560" y1="250" x2="696" y2="200" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="696" y1="170" x2="562" y2="120" stroke="#64748b" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+
+  <!-- agent labels -->
+  <g font-family="ui-monospace, monospace" font-size="12" fill="#64748b">
+    <text x="600" y="178" text-anchor="middle">write outbox/&lt;name&gt;/</text>
+    <text x="600" y="142" text-anchor="middle">read inbox/</text>
+  </g>
+
+  <text x="32" y="358" font-family="ui-monospace, monospace" font-size="12" fill="#475569">The model only reads/writes files. Routing, ACL, IDs, read-state, queueing &amp; the durable log are orchestrator code.</text>
+</svg>

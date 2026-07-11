@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="360" viewBox="0 0 900 360" role="img" aria-label="Terminal output of agentainer status and agentainer queue against a running mock swarm">
+  <defs>
+    <linearGradient id="term2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="900" height="360" rx="14" fill="url(#term2)"/>
+  <rect x="0" y="0" width="900" height="36" rx="14" fill="#1e293b"/>
+  <rect x="0" y="18" width="900" height="18" fill="#1e293b"/>
+  <circle cx="24" cy="18" r="6" fill="#ef4444"/>
+  <circle cx="46" cy="18" r="6" fill="#f59e0b"/>
+  <circle cx="68" cy="18" r="6" fill="#22c55e"/>
+  <text x="450" y="23" text-anchor="middle" font-family="ui-monospace, monospace" font-size="13" fill="#94a3b8">agentainer status</text>
+
+  <g font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="15">
+    <text x="28" y="76" fill="#cbd5e1">swarm: research   root: ./research-workspace</text>
+
+    <text x="48" y="112" fill="#86efac">alice</text>
+    <text x="128" y="112" fill="#94a3b8">(claude)</text>
+    <text x="220" y="112" fill="#22d3ee">up idle</text>
+    <text x="320" y="112" fill="#cbd5e1">queue=0 unread=0 talks=user</text>
+
+    <text x="48" y="140" fill="#86efac">bob</text>
+    <text x="128" y="140" fill="#94a3b8">(gemini)</text>
+    <text x="220" y="140" fill="#fbbf24">up busy 42s</text>
+    <text x="340" y="140" fill="#cbd5e1">queue=1 unread=1 talks=alice,user</text>
+
+    <text x="48" y="168" fill="#86efac">carol</text>
+    <text x="128" y="168" fill="#94a3b8">(codex)</text>
+    <text x="220" y="168" fill="#22d3ee">up idle</text>
+    <text x="320" y="168" fill="#cbd5e1">queue=0 unread=0 talks=alice</text>
+
+    <text x="28" y="200" fill="#7dd3fc">supervisor: alive</text>
+
+    <line x1="24" y1="226" x2="876" y2="226" stroke="#1e293b" stroke-width="1"/>
+
+    <text x="28" y="262" fill="#64748b">$ <tspan fill="#7dd3fc">agentainer queue</tspan> -c research.yaml --agent bob</text>
+    <text x="48" y="290" fill="#cbd5e1">bob: busy for 42s (task from alice), 1 message(s) queued</text>
+    <text x="48" y="314" fill="#94a3b8">  1. m-3f2a.md: alice: "Draft the API client skeleton."</text>
+    <text x="48" y="342" fill="#475569">queue = pending mail waiting for bob's current turn to finish</text>
+  </g>
+</svg>

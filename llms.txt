@@ -53,7 +53,7 @@ mailroom route mail safely. Swap each `command` for a real agent CLI to run for 
 - `user` — toggle `user` availability (`available`/`away`/`inbox`/`send`).
 - `queue` / `inbox` / `idle` — inspect pending mail, current inbox, idle agents.
 - `hook` / `watch` / `supervise` — turn-completion hook, live pane watch, liveness supervisor.
-- `serve` — HTTP control-plane UI (observability + send-as-user) on `127.0.0.1`; token required for any non-loopback bind.
+- `serve` — HTTP control-plane UI (observability + send-as-user) on `127.0.0.1`; token required for non-loopback.
 - `add <name> --type T --command C --can-talk-to X` — add an agent to the config and bring it up.
 - `edit <name> -s key=value` — edit an agent's fields and reconcile.
 - `remove <name>` — remove an agent and stop its session.
@@ -70,6 +70,69 @@ a token is required for any non-loopback bind (the UI is a control plane).
 Change the swarm without a full teardown: `add`/`remove`/`edit` rewrite `agentainer.yaml`
 with a stdlib-only YAML emitter (works with or without PyYAML) and then `reconcile` the
 change into effect.
+
+## Verified CLI behaviours (do not "simplify" these away)
+These are observed, load-bearing behaviours of the shipping CLI. An LLM patching or
+"tidying" a config/command around them will produce a subtly broken swarm — keep them.
+
+- **`validate` launches nothing.** It resolves and prints the config only. Safe to run
+  in any environment.
+- **`up` installs per-`type` turn detection.** `claude` → Stop hook; `codex` → `notify`
+  program; `gemini`/`hermes` → pane polling. This wiring is what makes completion
+  detectable; do not assume a bare tmux session is enough.
+- **One message in `inbox/` at a time.** The orchestrator releases the next message
+  only after the current one is handled (moved to `read/`, or auto-archived after N
+  presentations). An agent never sees a queue of inbox files.
+- **Outgoing mail is swept on stop, not in real time.** Writes to `outbox/<name>/` are
+  routed when the agent's turn finishes (Stop hook / `notify` / supervisor tick), not
+  the instant the file appears. A long-running turn does not deliver mid-turn.
+- **Every delivered message is stamped** with `From:` / `To:` / `Id:` / `Time:` /
+  `Re:` headers by the orchestrator; the sender only wrote natural-language body text.
+- **ACL is enforced at routing.** A send to a name not in `can_talk_to` is bounced: a
+  `system` explanation is dropped in the sender's `inbox/` and the file moved to
+  `failed/`. `"*"` means everyone-else.
+- **`user` send is held, not bounced, when unavailable.** If `user` is in `can_talk_to`
+  but `user` availability is `away`, the mail is queued and a `system` ack is returned;
+  it is released when `user` becomes `available`.
+- **`read/` is a best-effort receipt.** Moving mail there marks the sender's `sent/`
+  copy read; if the model forgets, the orchestrator auto-archives after N presentations
+  so a forgetful agent can't wedge or loop the system.
+- **ACL membership = presence of `outbox/<name>/` + `about.md`.** The orchestrator
+  creates these when `can_talk_to` includes the name; the model reads `about.md` as a
+  contact card. Don't hand-create these folders expecting routing to follow.
+- **`type` ↔ `command` mismatch is a hard error at `up`.** If `command` launches a
+  different CLI than `type` implies, `up` fails with `ConfigError` instead of silently
+  pinning the agent `busy` forever.
+- **`capture: none` auto-upgrades to `hook` on hook-backed types** (`claude`/`codex`)
+  at config load, with a warning — a `none` capture on those types would blind turn
+  detection.
+- **`add`/`remove`/`edit` rewrite the YAML with the stdlib emitter** and then
+  `reconcile`; they work with *or without* PyYAML. Don't assume PyYAML is present.
+- **The liveness supervisor is always on at `up`.** It reconciles stale-busy, dead, and
+  silent-but-alive agents every tick; `status` reports `supervisor: alive|down`.
+
+## Gotchas (the quirks that look like bugs but aren't)
+- **Mail sits in `outbox/<name>/` until the turn ends.** If you `send` as an agent and
+  immediately check the recipient's `inbox/`, it may not be there yet — wait for the
+  sender's turn to finish (or the next supervisor tick).
+- **`inbox/` holds exactly one file.** Don't script around "the newest of many inbox
+  files"; there is never more than one.
+- **A `system` mail in `inbox/` is not spam** — it's the orchestrator talking back
+  (bounce explanation, nudge ack, ping). Treat it as first-class input.
+- **`failed/` means "the orchestrator refused this", not "a crash".** Almost always an
+  ACL violation. Read the `system` note inside the file.
+- **`user` is a virtual mailbox, not an agent.** `--to user` routes to the operator;
+  `user` availability gates delivery (hold-not-bounce). There is no `user` tmux session.
+- **Reserve the names `user` and `system`.** A real agent may not claim them; the
+  validator rejects it.
+- **Mismatched `type`/`command` deadlocks silently** if you bypass the validator (e.g.
+  hand-editing the YAML and skipping `validate`). Always `validate` before `up`.
+- **`capture: none` is only valid for pane-polling types** (`gemini`/`hermes`). On
+  `claude`/`codex` it is auto-corrected to `hook`; if you really need no detection,
+  expect that agent to never report completion.
+- **The no-PyYAML path is supported but stricter.** The bundled `minyaml` parser does
+  not support multi-document YAML, anchors, or tags. Keep real configs single-document
+  and you'll never notice.
 
 ## Project status
 - **P1 — Mail runtime (CLI-driven)**: ✅ done.

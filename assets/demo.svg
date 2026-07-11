@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="440" viewBox="0 0 900 440" role="img" aria-label="Terminal cast of the Agentainer quickstart: up, status, send, then logs showing the mailroom routing mail between mock agents">
+  <defs>
+    <linearGradient id="term" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="900" height="440" rx="14" fill="url(#term)"/>
+
+  <!-- title bar -->
+  <rect x="0" y="0" width="900" height="40" rx="14" fill="#1e293b"/>
+  <rect x="0" y="20" width="900" height="20" fill="#1e293b"/>
+  <circle cx="26" cy="20" r="7" fill="#ef4444"/>
+  <circle cx="50" cy="20" r="7" fill="#f59e0b"/>
+  <circle cx="74" cy="20" r="7" fill="#22c55e"/>
+  <text x="450" y="25" text-anchor="middle" font-family="ui-monospace, monospace" font-size="14" fill="#94a3b8">agentainer — quickstart</text>
+
+  <g font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="15">
+    <!-- prompt 1 -->
+    <text x="28" y="78" fill="#64748b">$ <tspan fill="#7dd3fc">agentainer up</tspan> -c my-swarm.yaml</text>
+    <text x="48" y="102" fill="#86efac">[ok] orchestrator: mailboxes ready</text>
+    <text x="48" y="124" fill="#86efac">[ok] alice  (claude)  session t-alice  up</text>
+    <text x="48" y="146" fill="#86efac">[ok] bob    (gemini)  session t-bob    up</text>
+
+    <!-- prompt 2 -->
+    <text x="28" y="184" fill="#64748b">$ <tspan fill="#7dd3fc">agentainer status</tspan> -c my-swarm.yaml</text>
+    <text x="48" y="208" fill="#cbd5e1">  alice (claude) up idle       queue=0 unread=0 talks=user</text>
+    <text x="48" y="230" fill="#cbd5e1">  bob   (gemini) up idle       queue=0 unread=0 talks=alice,user</text>
+    <text x="48" y="252" fill="#cbd5e1">supervisor: alive</text>
+
+    <!-- prompt 3 -->
+    <text x="28" y="290" fill="#64748b">$ <tspan fill="#7dd3fc">agentainer send</tspan> -c my-swarm.yaml --to bob "Summarize the repo."</text>
+    <text x="48" y="314" fill="#fcd34d">user -> bob: delivered</text>
+
+    <!-- prompt 4 -->
+    <text x="28" y="352" fill="#64748b">$ <tspan fill="#7dd3fc">agentainer logs</tspan> -c my-swarm.yaml -f</text>
+    <text x="48" y="376" fill="#94a3b8">{&quot;event&quot;:&quot;sent&quot;, &quot;from&quot;:&quot;user&quot;, &quot;to&quot;:&quot;bob&quot;, &quot;id&quot;:&quot;m-...&quot;}</text>
+    <text x="48" y="398" fill="#94a3b8">{&quot;event&quot;:&quot;received&quot;, &quot;agent&quot;:&quot;bob&quot;, &quot;unread&quot;:1}</text>
+    <text x="48" y="420" fill="#22d3ee">bob reads inbox/ -> writes outbox/user/ -> routed on stop</text>
+  </g>
+</svg>
