@@ -1,0 +1,94 @@
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install test deps (optional PyYAML, test-only)
+        run: python -m pip install --upgrade pip pytest pytest-cov
+      - name: Run suite with coverage
+        run: python -m pytest tests/ --cov=lib --cov-report=term-missing -q
+      - name: Enforce 100% line coverage
+        run: |
+          python -m pytest tests/ --cov=lib --cov-report= | \
+            python - <<'PY'
+          import subprocess, sys
+          out = subprocess.run(
+              [sys.executable, "-m", "pytest", "tests/", "--cov=lib",
+               "--cov-report=term-missing", "-q"],
+              capture_output=True, text=True,
+          ).stdout
+          for line in out.splitlines():
+              if line.startswith("lib/") and "100%" not in line:
+                  print("COVERAGE GAP:", line); sys.exit(1)
+          print("all lib modules at 100% line coverage")
+          PY
+
+  stdlib:
+    name: Stdlib-only (no PyYAML)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Assert PyYAML is NOT importable
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          if importlib.util.find_spec("yaml") is not None:
+              print("ERROR: PyYAML is importable in the stdlib job; "
+                    "the no-PyYAML path is not proven."); sys.exit(1)
+          print("PyYAML absent — proving the bundled minyaml fallback path")
+          PY
+      - name: Install pytest only (no PyYAML)
+        run: python -m pip install --upgrade pip pytest
+      - name: Run suite via minyaml fallback
+        run: python -m pytest tests/ -q
+
+  publish:
+    name: npm publish (provenance)
+    needs: [test, stdlib]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required for npm publish provenance / supply-chain attestation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Verify git tag matches package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "v$PKG" ] && [ "$TAG" != "$PKG" ]; then
+            echo "::error::git tag '$TAG' does not match package.json version '$PKG'."
+            echo "::error::tag a release as 'v$PKG' (or '$PKG') to publish."
+            exit 1
+          fi
+          echo "tag '$TAG' matches package.json version '$PKG' — proceeding to publish"
+
+      - name: Publish with provenance
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
