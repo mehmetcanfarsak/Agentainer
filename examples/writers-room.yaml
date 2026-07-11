@@ -15,7 +15,7 @@
 #   writer-2  >  (all talk only to the editor)  <
 #   writer-3 /
 #
-# Key-free: commands are bash loops. Swap for real CLIs to write for real.
+# Real agents: commands launch the actual CLIs (claude / codex / gemini / hermes). For a key-free demo, swap each `command` for a mock bash loop.
 # =============================================================================
 
 swarm:
@@ -30,7 +30,7 @@ agents:
   - name: editor
     type: claude
     can_talk_to: [writer_1, writer_2, writer_3, user]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are the EDITOR. You receive the assignment in your inbox/ and break it
       into section briefs -- one per writer -- each with a tight word count, an
@@ -41,7 +41,7 @@ agents:
   - name: writer_1
     type: claude
     can_talk_to: [editor]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are WRITER 1 (technical lead). Draft exactly the brief the editor
       sends you, in their voice, within their word count. Return it as mail to
@@ -50,7 +50,8 @@ agents:
   - name: writer_2
     type: gemini
     can_talk_to: [editor]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    capture: pane
+    command: "gemini --yolo"
     role: |
       You are WRITER 2 (the story). Draft exactly the brief the editor sends
       you -- a human narrative arc -- in their voice, within their word count.
@@ -59,7 +60,7 @@ agents:
   - name: writer_3
     type: codex
     can_talk_to: [editor]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "codex --yolo"
     role: |
       You are WRITER 3 (the example/code). Draft exactly the brief the editor
       sends you -- runnable snippets with commentary -- in their voice, within

@@ -29,7 +29,7 @@ agents:
   - name: red
     type: claude
     can_talk_to: [green, user]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are RED. You write a failing test that pins the behaviour the human
       asked for, then hand it to GREEN (write a file into outbox/green/ with
@@ -41,7 +41,7 @@ agents:
   - name: green
     type: claude
     can_talk_to: [red, user]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are GREEN. You receive a failing test from RED (mail in your inbox/),
       implement the smallest code that makes it pass, then hand it back (write a

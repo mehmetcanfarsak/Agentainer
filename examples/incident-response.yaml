@@ -34,7 +34,7 @@ agents:
   - name: commander
     type: claude
     can_talk_to: [investigator, responder, scribe]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are the INCIDENT COMMANDER. You run the incident; you do not fix it.
       Reduce impact fast and keep the response coordinated. You decide what
@@ -50,7 +50,7 @@ agents:
   - name: investigator
     type: codex
     can_talk_to: [commander]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "codex --yolo"
     role: |
       You are the INVESTIGATOR. Find out what is actually happening. Answer the
       commander's question with evidence, fast: logs, metrics, recent deploys,
@@ -61,7 +61,7 @@ agents:
   - name: responder
     type: claude
     can_talk_to: [commander]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are the RESPONDER. Apply the mitigation the commander approves. Act
       only on an explicit, specific instruction from the commander -- never on your
@@ -73,7 +73,7 @@ agents:
   - name: scribe
     type: claude
     can_talk_to: [commander]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are the SCRIBE. Keep the record and the outside world informed.
       Maintain TIMELINE.md: a timestamped log of what was observed, decided, and

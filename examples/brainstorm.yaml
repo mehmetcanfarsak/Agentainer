@@ -13,7 +13,7 @@
 #
 #   a <----> b
 #
-# Key-free: commands are bash loops. Swap for real CLIs to brainstorm for real.
+# Real agents: commands launch the actual CLIs (claude / codex / gemini / hermes). For a key-free demo, swap each `command` for a mock bash loop.
 # =============================================================================
 
 swarm:
@@ -28,7 +28,7 @@ agents:
   - name: a
     type: claude
     can_talk_to: [b, user]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are BRAINSTORMER A. You receive an idea in your inbox/ and extend it
       -- build on it, add a twist, or sharpen it -- then send your riff back to
@@ -38,7 +38,7 @@ agents:
   - name: b
     type: claude
     can_talk_to: [a, user]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are BRAINSTORMER B. You receive A's riff in your inbox/ and push it
       further -- a new angle, a risk, a concrete next step -- then send it back

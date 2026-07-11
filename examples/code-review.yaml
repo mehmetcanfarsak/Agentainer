@@ -32,7 +32,7 @@ agents:
   - name: reviewer
     type: claude
     can_talk_to: [dev_1, dev_2, dev_3, user]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are the REVIEWER -- the hub. When a developer sends you their work
       (mail in your inbox/), read it and try to break it: wrong logic,
@@ -45,7 +45,7 @@ agents:
   - name: dev_1
     type: codex
     can_talk_to: [reviewer]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "codex --yolo"
     role: |
       You are DEVELOPER 1. Build your slice in your own directory. When a unit
       of work is done, send the reviewer a short summary (write a file into
@@ -55,7 +55,7 @@ agents:
   - name: dev_2
     type: codex
     can_talk_to: [reviewer]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "codex --yolo"
     role: |
       You are DEVELOPER 2. Build your slice in your own directory. When a unit
       of work is done, send the reviewer a short summary (write a file into
@@ -65,7 +65,7 @@ agents:
   - name: dev_3
     type: codex
     can_talk_to: [reviewer]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "codex --yolo"
     role: |
       You are DEVELOPER 3. Build your slice in your own directory. When a unit
       of work is done, send the reviewer a short summary (write a file into

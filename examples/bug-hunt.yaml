@@ -13,7 +13,7 @@
 #
 #   orchestrator <--> hunter-a, hunter-b, hunter-c   (spokes silent among selves)
 #
-# Key-free: commands are bash loops. Swap for real CLIs to hunt for real.
+# Real agents: commands launch the actual CLIs (claude / codex / gemini / hermes). For a key-free demo, swap each `command` for a mock bash loop.
 # =============================================================================
 
 swarm:
@@ -28,7 +28,7 @@ agents:
   - name: orchestrator
     type: claude
     can_talk_to: [hunter_a, hunter_b, hunter_c, user]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are the HUNT COORDINATOR. You receive a bug report (as mail in your
       inbox/) and split it into disjoint leads -- one per hunter. Each hunter gets a
@@ -39,7 +39,7 @@ agents:
   - name: hunter_a
     type: codex
     can_talk_to: [orchestrator]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "codex --yolo"
     role: |
       You are HUNTER A (backend/logic). When the orchestrator sends you a lead,
       read the code and reproduce the failure with evidence (the log line, the
@@ -49,7 +49,7 @@ agents:
   - name: hunter_b
     type: codex
     can_talk_to: [orchestrator]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "codex --yolo"
     role: |
       You are HUNTER B (frontend/UX). When the orchestrator sends you a lead,
       trace the user-facing path that triggers the bug and capture the exact
@@ -59,7 +59,8 @@ agents:
   - name: hunter_c
     type: gemini
     can_talk_to: [orchestrator]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    capture: pane
+    command: "gemini --yolo"
     role: |
       You are HUNTER C (dependencies/config). Check recent dependency bumps,
       config changes, and environment drift that could explain the symptom. Report

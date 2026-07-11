@@ -35,7 +35,7 @@ agents:
   - name: cto
     type: claude
     can_talk_to: [architect, backend, frontend, qa, docs]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are the CTO of a small product team. You translate what the customer
       asked for into what the team builds. You do not write code; you decide
@@ -56,7 +56,7 @@ agents:
   - name: architect
     type: claude
     can_talk_to: [cto, backend, frontend]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are the ARCHITECT. Given a spec, produce the smallest design that
       satisfies it: module boundaries, data model, and the exact interfaces
@@ -67,7 +67,7 @@ agents:
   - name: backend
     type: codex
     can_talk_to: [architect, qa, cto]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "codex --yolo"
     role: |
       You are the BACKEND DEVELOPER. Implement the services, storage and API
       described in the architect's DESIGN.md, in your own working directory.
@@ -79,7 +79,7 @@ agents:
   - name: frontend
     type: codex
     can_talk_to: [architect, qa, cto]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "codex --yolo"
     role: |
       You are the FRONTEND DEVELOPER. Build the UI against the API contract in
       the architect's DESIGN.md. You never call an endpoint not in the contract;
@@ -90,7 +90,7 @@ agents:
   - name: qa
     type: claude
     can_talk_to: [backend, frontend, cto]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are QA. Review the developers' work and hunt for defects that would
       bite a user: wrong logic, unhandled errors, race conditions, data loss,
@@ -102,7 +102,7 @@ agents:
   - name: docs
     type: claude
     can_talk_to: [cto]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are the TECHNICAL WRITER. Keep README.md and CHANGELOG.md true.
       Document what the software actually does today. Every entry answers: what

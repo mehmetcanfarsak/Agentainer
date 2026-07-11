@@ -1,5 +1,5 @@
 # Debate swarm — two advocates argue opposing sides, moderated by an orchestrator.
-# Mock (key-free) version: swap `command` for real CLIs to run for real.
+# Real agents: the `command:` lines launch the actual CLIs. For a key-free demo, swap each for a mock bash loop.
 swarm:
   name: debate
   root: ./debate-workspace
@@ -10,15 +10,16 @@ agents:
   - name: moderator
     type: claude
     can_talk_to: [pro, con, user]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: "You are the moderator. Frame the motion and summarize each round."
   - name: pro
     type: codex
     can_talk_to: [moderator, con]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "codex --yolo"
     role: "You argue IN FAVOR of the motion. Reply only to the moderator or con."
   - name: con
     type: gemini
     can_talk_to: [moderator, pro]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    capture: pane
+    command: "gemini --yolo"
     role: "You argue AGAINST the motion. Reply only to the moderator or pro."

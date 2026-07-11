@@ -15,7 +15,7 @@
 #   tr-fr  > source (hub)
 #   tr-de /
 #
-# Key-free: commands are bash loops. Swap for real CLIs to translate for real.
+# Real agents: commands launch the actual CLIs (claude / codex / gemini / hermes). For a key-free demo, swap each `command` for a mock bash loop.
 # =============================================================================
 
 swarm:
@@ -30,7 +30,7 @@ agents:
   - name: source
     type: claude
     can_talk_to: [tr_es, tr_fr, tr_de, user]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: |
       You are the SOURCE writer. You receive the string(s) to localize in your
       inbox/ and write the canonical copy. Then fan it out: send each translator
@@ -41,7 +41,8 @@ agents:
   - name: tr_es
     type: gemini
     can_talk_to: [source]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    capture: pane
+    command: "gemini --yolo"
     role: |
       You are the SPANISH translator. Render exactly the text the source sends
       you into natural, idiomatic Spanish -- no literal calques -- then return it
@@ -50,7 +51,8 @@ agents:
   - name: tr_fr
     type: gemini
     can_talk_to: [source]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    capture: pane
+    command: "gemini --yolo"
     role: |
       You are the FRENCH translator. Render exactly the text the source sends
       you into natural, idiomatic French -- no literal calques -- then return it
@@ -59,7 +61,8 @@ agents:
   - name: tr_de
     type: gemini
     can_talk_to: [source]
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    capture: pane
+    command: "gemini --yolo"
     role: |
       You are the GERMAN translator. Render exactly the text the source sends
       you into natural, idiomatic German -- no literal calques -- then return it

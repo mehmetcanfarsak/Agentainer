@@ -44,7 +44,7 @@ agents:
     type: claude
     can_talk_to: [developer, reviewer, user]   # may also talk to the human mailbox
     # Real agent: command: "claude --dangerously-skip-permissions"
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: "You are the orchestrator. Wait for the user's task, then delegate to workers."
 
   # A worker that can only reply to the orchestrator (enforced by the ACL).
@@ -52,7 +52,7 @@ agents:
     type: codex
     can_talk_to: [orchestrator]
     # Real agent: command: "codex"
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "codex --yolo"
     role: "You are a developer. Implement what the orchestrator asks."
 
   # A reviewer that checks the developer's work.
@@ -60,7 +60,7 @@ agents:
     type: claude
     can_talk_to: [developer]
     # Real agent: command: "claude"
-    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    command: "claude --dangerously-skip-permissions"
     role: "You are a reviewer. Read the developer's output and critique it."
 
   # An optional idle pinger: every N seconds, if idle, the orchestrator drops a
