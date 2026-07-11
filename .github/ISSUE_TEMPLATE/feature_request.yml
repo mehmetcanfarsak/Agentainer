@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest an enhancement to Agentainer.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem would this solve? What are you trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How should Agentainer behave? Remember the model only reads/writes files.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other approaches or workarounds you thought about.
+    validations:
+      required: false
+  - type: checkboxes
+    id: invariants
+    attributes:
+      label: Invariant check
+      options:
+        - label: "Keeps zero runtime dependencies (Python 3 + bash + tmux; PyYAML optional)"
+        - label: "Keeps the file-based mail model (agents read/write files; orchestrator owns logic)"
+        - label: "Would not break 100% line coverage of the lib modules"

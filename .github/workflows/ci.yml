@@ -71,10 +71,23 @@ jobs:
           python-version: "3.11"
       - name: Byte-compile lib (stdlib-only proof)
         run: python -m py_compile lib/*.py
-      - name: Shellcheck hooks + launcher
+      - name: Shellcheck hooks + launcher + validate.sh
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
-          shellcheck hooks/*.sh agentainer bin/agentainer.js 2>/dev/null || \
-            shellcheck hooks/*.sh agentainer
+          shellcheck hooks/*.sh agentainer bin/agentainer.js tests/validate.sh 2>/dev/null || \
+            shellcheck hooks/*.sh agentainer tests/validate.sh
       - name: Validate example YAML loads without PyYAML
         run: python -c "import sys; sys.path.insert(0,'lib'); import config; config.load('examples/quickstart.yaml'); print('example config valid')"
+
+  validate:
+    name: CLI end-to-end (validate.sh, mock swarm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Run validate.sh (no API keys, no model calls)
+        run: bash tests/validate.sh

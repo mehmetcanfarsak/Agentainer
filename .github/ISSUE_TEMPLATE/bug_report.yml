@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a defect in Agentainer (runtime, CLI, UI, or mail routing).
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please fill this out as precisely as you can — the
+        mail model is deterministic orchestrator code, so exact steps reproduce
+        reliably.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear, concise description of the bug.
+      placeholder: "Agents stopped receiving mail after a restart..."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands, config, and agent type(s).
+      render: yaml
+      placeholder: |
+        agentainer up -c my-swarm.yaml
+        agentainer send -c my-swarm.yaml --to bob "..."
+        ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Config (redacted)
+      description: Paste your `agentainer.yaml` with any secrets/API keys removed.
+      render: yaml
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Agentainer version
+      description: Output of `agentainer --version`.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: e.g. ubuntu 22.04, macOS 14, Python 3.11, tmux 3.4
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-checks
+      options:
+        - label: "I ran `agentainer validate` and it passed"
+        - label: "I have not committed any secrets / API keys"
+        - label: "This is not a security vulnerability (those go to SECURITY.md)"
