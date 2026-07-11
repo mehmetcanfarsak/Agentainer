@@ -297,7 +297,14 @@ def nudge(cfg: SwarmConfig, agent_name: str) -> bool:
         f"they're available).\n"
         f"You can message: {allowed}."
     )
-    return tmux.paste_into(cfg, agent.session, nudge_text)
+    try:
+        return tmux.paste_into(cfg, agent.session, nudge_text)
+    except tmux.SwarmError:
+        # Best-effort: if the agent isn't up (or tmux is unavailable) the mail
+        # still sits in the queue and gets released on the next sweep / when the
+        # agent starts. Never crash a send because a session is missing -- a
+        # paste failure just means we retry on the next tick.
+        return False
 
 
 def route_outbound(cfg: SwarmConfig, sender: str, recipient: str, body: str) -> str:
