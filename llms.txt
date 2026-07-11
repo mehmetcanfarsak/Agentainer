@@ -1,0 +1,54 @@
+# Agentainer
+
+> Zero-dependency multi-agent orchestrator with a file-based mail model. Launch
+> Claude Code, Codex, Gemini, or Hermes each in its own tmux session; let them
+> message each other only where `can_talk_to` allows. No runtime dependencies,
+> no API keys required to exercise the mechanics.
+
+## What it is
+Agentainer v2 replaces v1's fragile "tagged XML envelope inside prose" messaging
+with a **file-based mail model**: agents *read a file* to receive and *write a
+file* to send. The orchestrator owns all hard logic — routing, ACL, message IDs,
+threading, read-state, queueing, retries, availability, the durable log. The
+model only reads and writes natural-language files.
+
+## Core model (two verbs, four folders)
+- Agents communicate by reading/writing files under their mail dir.
+- `inbox/` — the **one** current unread message (orchestrator releases one at a time).
+- `outbox/<name>/` — write here to send to `<name>`; read `<name>/about.md` for a contact card.
+- `read/` — move a handled message here (best-effort read receipt).
+- `sent/` — the agent's own record of delivered mail (orchestrator moves it here).
+- `failed/` — mail bounced by the orchestrator (ACL violation, etc.), with a `system` explanation.
+
+## Why a rewrite
+v1 scraped messages out of a fullscreen-TUI pane. That was unreliable across LLMs.
+The v2 mail model works on nearly every tool-calling model, including weak ones.
+
+## Quick start
+```
+cp examples/quickstart.yaml my-swarm.yaml
+agentainer up       -c my-swarm.yaml
+agentainer status   -c my-swarm.yaml
+agentainer send     -c my-swarm.yaml --to orchestrator "Build a CSV->Parquet CLI."
+agentainer logs     -c my-swarm.yaml -f
+agentainer down     -c my-swarm.yaml
+```
+(Install via `npm install` + `npm link` so the `agentainer` bin is on PATH.)
+The quickstart uses `bash` loop "mock agents" (no API keys) so you can watch the
+mailroom route mail safely. Swap each `command` for a real agent CLI to run for real.
+
+## Key invariants
+- Zero runtime dependencies (Python 3 + bash + tmux; PyYAML optional, bundled `minyaml` fallback).
+- `can_talk_to` ACL is cooperative, documented honestly, not an OS boundary.
+- `user`/`system` are reserved virtual mailboxes.
+- Liveness supervisor heartbeat retained (no event-only redesign).
+- Durable JSONL event log is the source of truth for history.
+
+## Project status
+- **P1 — Mail runtime (CLI-driven)**: in progress.
+- **P2 — UI observability**, **P3 — terminal snapshot + send**, **P4 — dynamic reconcile**: planned.
+
+## Docs
+- `ProjectPlan.md` — the design (source of truth).
+- `README.md` — user-facing overview, install, commands, FAQ.
+- v1 reference (read-only): `/root/AgentSwarm/docs/PROJECT-DOCUMENTATION.md`.

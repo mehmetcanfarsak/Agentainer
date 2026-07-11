@@ -1,0 +1,29 @@
+# Agentainer runtime state -- never commit or ship (see CLAUDE.md / §20).
+.agentainer/
+.agentainer
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Node
+node_modules/
+
+# Generated example workspaces (agents create these at `up` time).
+*-workspace/
+*-runtime/
+examples/*-output/
+examples/*-workspace/
+quickstart-workspace/
+
+# OS
+.DS_Store
+
+# Build handoff note (not shipped)
+.build-status.md

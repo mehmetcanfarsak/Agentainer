@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+#
+# Agentainer -- launch a configurable team of coding agents in tmux.
+#
+#   ./agentainer up                       start every agent in agentainer.yaml
+#   ./agentainer up -c my-swarm.yaml      ...from a different config
+#   ./agentainer my-swarm.yaml            shorthand for `up -c my-swarm.yaml`
+#   ./agentainer validate                 print the resolved config, launch nothing
+#   ./agentainer status                   see who is running
+#   ./agentainer send --to dev "hi"       mail an agent
+#   ./agentainer attach dev               jump into an agent's tmux session
+#   ./agentainer down                     stop everything
+#
+# See README.md for the full reference, or llms.txt if you are an LLM.
+set -euo pipefail
+
+AGENTAINER_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export AGENTAINER_HOME
+
+PYTHON="${AGENTAINER_PYTHON:-}"
+if [[ -z "$PYTHON" ]]; then
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      PYTHON="$candidate"
+      break
+    fi
+  done
+fi
+
+if [[ -z "$PYTHON" ]]; then
+  echo "xx Agentainer needs python3 on PATH (or set AGENTAINER_PYTHON)" >&2
+  exit 1
+fi
+
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "!! tmux was not found on PATH; every command except 'validate' will fail" >&2
+fi
+
+# The config is resolved in lib/cli.py: -c, then $AGENTAINER_CONFIG, then
+# ./agentainer.yaml, then the agentainer.yaml next to this script.
+exec "$PYTHON" "$AGENTAINER_HOME/lib/cli.py" "$@"

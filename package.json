@@ -1,0 +1,59 @@
+{
+  "name": "agentainer",
+  "version": "2.0.0",
+  "description": "Zero-dependency multi-agent orchestrator with a file-based mail model for AI coding agents (Claude Code, Codex, Gemini, Hermes). Agents talk by reading and writing files; the orchestrator routes the mail.",
+  "keywords": [
+    "agents",
+    "ai-agents",
+    "ai",
+    "llm",
+    "agentic",
+    "claude-code",
+    "claude",
+    "codex",
+    "gemini",
+    "hermes",
+    "tmux",
+    "orchestration",
+    "multi-agent",
+    "mailbox",
+    "prompt-routing",
+    "python"
+  ],
+  "homepage": "https://github.com/mehmetcanfarsak/Agentainer#readme",
+  "bugs": {
+    "url": "https://github.com/mehmetcanfarsak/Agentainer/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mehmetcanfarsak/Agentainer.git"
+  },
+  "license": "MIT",
+  "author": "mehmetcanfarsak",
+  "type": "commonjs",
+  "bin": {
+    "agentainer": "bin/agentainer.js"
+  },
+  "files": [
+    "bin/agentainer.js",
+    "lib/*.py",
+    "hooks/*.sh",
+    "scripts/check-deps.js",
+    "agentainer",
+    "examples/*.yaml",
+    "quickstart.yaml",
+    "README.md",
+    "llms.txt"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/check-deps.js",
+    "doctor": "node scripts/check-deps.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "linux",
+    "darwin"
+  ]
+}

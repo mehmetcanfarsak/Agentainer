@@ -1,0 +1,12 @@
+# Runtime state must never ship (three-layer guard: .gitignore + .npmignore + files allowlist).
+.agentainer/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+node_modules/
+tests/
+docs/
+.github/
+*-workspace/
+*-runtime/

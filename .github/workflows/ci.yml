@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Test ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install test deps (optional PyYAML, test-only)
+        run: python -m pip install --upgrade pip pytest pytest-cov
+      - name: Run suite with coverage
+        run: python -m pytest tests/ --cov=lib --cov-report=term-missing -q
+      - name: Enforce 100% line coverage
+        run: |
+          python -m pytest tests/ --cov=lib --cov-report= | \
+            python - <<'PY'
+          import subprocess, sys
+          out = subprocess.run(
+              [sys.executable, "-m", "pytest", "tests/", "--cov=lib",
+               "--cov-report=term-missing", "-q"],
+              capture_output=True, text=True,
+          ).stdout
+          for line in out.splitlines():
+              if line.startswith("lib/") and "100%" not in line:
+                  print("COVERAGE GAP:", line); sys.exit(1)
+          print("all lib modules at 100% line coverage")
+          PY
+
+  stdlib:
+    name: Stdlib-only (no PyYAML)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Assert PyYAML is NOT importable
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          if importlib.util.find_spec("yaml") is not None:
+              print("ERROR: PyYAML is importable in the stdlib job; "
+                    "the no-PyYAML path is not proven."); sys.exit(1)
+          print("PyYAML absent — proving the bundled minyaml fallback path")
+          PY
+      - name: Install pytest only (no PyYAML)
+        run: python -m pip install --upgrade pip pytest
+      - name: Run suite via minyaml fallback
+        run: python -m pytest tests/ -q
+
+  lint:
+    name: Lint + shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Byte-compile lib (stdlib-only proof)
+        run: python -m py_compile lib/*.py
+      - name: Shellcheck hooks + launcher
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck hooks/*.sh agentainer bin/agentainer.js 2>/dev/null || \
+            shellcheck hooks/*.sh agentainer
+      - name: Validate example YAML loads without PyYAML
+        run: python -c "import sys; sys.path.insert(0,'lib'); import config; config.load_config('examples/quickstart.yaml'); print('example config valid')"
