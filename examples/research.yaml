@@ -1,0 +1,24 @@
+# Research swarm — a coordinator briefs a researcher, who hands off to a reviewer.
+# Mock (key-free) version: swap `command` for real CLIs to run for real.
+swarm:
+  name: research
+  root: ./research-workspace
+defaults:
+  capture: none
+  can_talk_to: []
+agents:
+  - name: coordinator
+    type: claude
+    can_talk_to: [researcher, reviewer, user]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: "You are the coordinator. Break the user's question into tasks and delegate."
+  - name: researcher
+    type: gemini
+    can_talk_to: [coordinator, reviewer]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: "You are the researcher. Investigate and report findings to the reviewer."
+  - name: reviewer
+    type: codex
+    can_talk_to: [coordinator]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: "You are the reviewer. Critique the researcher's work and report to the coordinator."

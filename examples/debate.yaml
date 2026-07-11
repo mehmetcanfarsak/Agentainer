@@ -1,0 +1,24 @@
+# Debate swarm — two advocates argue opposing sides, moderated by an orchestrator.
+# Mock (key-free) version: swap `command` for real CLIs to run for real.
+swarm:
+  name: debate
+  root: ./debate-workspace
+defaults:
+  capture: none
+  can_talk_to: []
+agents:
+  - name: moderator
+    type: claude
+    can_talk_to: [pro, con, user]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: "You are the moderator. Frame the motion and summarize each round."
+  - name: pro
+    type: codex
+    can_talk_to: [moderator, con]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: "You argue IN FAVOR of the motion. Reply only to the moderator or con."
+  - name: con
+    type: gemini
+    can_talk_to: [moderator, pro]
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: "You argue AGAINST the motion. Reply only to the moderator or pro."

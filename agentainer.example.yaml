@@ -1,0 +1,73 @@
+# =============================================================================
+# agentainer.example.yaml — reference configuration for Agentainer v2.
+#
+# Copy it to start your own swarm:
+#
+#     cp agentainer.example.yaml my-swarm.yaml
+#     agentainer up       -c my-swarm.yaml
+#     agentainer status   -c my-swarm.yaml
+#     agentainer send     -c my-swarm.yaml --to orchestrator "Build a CSV->Parquet CLI."
+#     agentainer down     -c my-swarm.yaml
+#
+# This file is FULLY COMMENTED and KEY-FREE: every `command:` runs a tiny
+# `bash` loop instead of a real agent CLI, so the swarm comes up and routes
+# mail with NO API keys and NO model calls. To run real agents, swap each
+# `command` for the actual CLI you installed and drop `capture: none` so turns
+# get detected.
+#
+# The v2 model: agents RECEIVE by reading a file (inbox/) and SEND by writing a
+# file (outbox/<name>/). The orchestrator owns routing, ACL, message IDs,
+# read-state, queueing, retries, and the durable log.
+# =============================================================================
+
+swarm:
+  name: my-swarm                 # any label; shown in `status` / logs
+  root: ./my-swarm-workspace     # disposable working dir; agents get <root>/<name>/ subdirs
+  supervise: true                # run the liveness supervisor (heartbeat) at up
+  supervise_interval_ms: 15000   # how often the supervisor reconciles agents
+  ready_timeout_ms: 30000       # give up waiting for an agent's input prompt after this
+  busy_timeout_ms: 120000       # mark a silent agent idle after this long
+  user_available: false         # the human mailbox starts away (set `agentainer user available`)
+
+defaults:
+  # capture: how the orchestrator knows a turn finished.
+  #   hook  -> per-type hook/notify (claude Stop hook, codex `notify`)  [default for those types]
+  #   pane  -> poll the tmux pane (gemini / hermes, or any CLI without a hook)
+  #   none  -> no turn detection (mock agents; the agent never "finishes")
+  # `capture: none` is auto-upgraded to `hook` on hook-backed types at load time.
+  capture: none
+  can_talk_to: []                # tightened per agent below
+
+agents:
+  # The orchestrator fans work out to the workers. It may also talk to the human.
+  - name: orchestrator
+    type: claude
+    can_talk_to: [developer, reviewer, user]   # may also talk to the human mailbox
+    # Real agent: command: "claude --dangerously-skip-permissions"
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: "You are the orchestrator. Wait for the user's task, then delegate to workers."
+
+  # A worker that can only reply to the orchestrator (enforced by the ACL).
+  - name: developer
+    type: codex
+    can_talk_to: [orchestrator]
+    # Real agent: command: "codex"
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: "You are a developer. Implement what the orchestrator asks."
+
+  # A reviewer that checks the developer's work.
+  - name: reviewer
+    type: claude
+    can_talk_to: [developer]
+    # Real agent: command: "claude"
+    command: "bash -c 'while true; do read -r l || sleep 1; done'"
+    role: "You are a reviewer. Read the developer's output and critique it."
+
+  # An optional idle pinger: every N seconds, if idle, the orchestrator drops a
+  # `system` nudge into this agent's queue (idle-only, no pile-up, min-cadence).
+  # - name: researcher
+  #   type: gemini
+  #   can_talk_to: [orchestrator]
+  #   command: "bash -c 'while true; do read -r l || sleep 1; done'"
+  #   periodically_ping_seconds: 600
+  #   periodically_ping_message: "Any progress to report? Reply, or stay quiet."
