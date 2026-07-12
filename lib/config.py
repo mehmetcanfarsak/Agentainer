@@ -146,7 +146,7 @@ class SwarmConfig:
     busy_timeout_ms: int = 900000
     # Resume is ON by default: `up` reattaches each agent to the conversation
     # recorded in .agentainer/sessions.yaml. Opt out with `swarm.resume: false`
-    # in the config, or `agentainer up --no-resume`, or `agentainer remove-data`.
+    # in the config, or `agentainer up --no-resume`, or `agentainer remove-session`.
     resume: bool = True
     user_available: bool = False
     pane_idle_ms: int = 2500

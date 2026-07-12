@@ -142,6 +142,11 @@
   .pill.no { background: var(--no-bg); color: var(--no-fg); }
   .pill.mute { background: var(--surface-2); color: var(--muted); }
   .dotpulse { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pill.upbtn { border: 1px solid var(--accent); background: transparent; color: var(--accent); cursor: pointer; font-family: inherit; }
+  .pill.upbtn:hover:not(:disabled) { background: var(--accent); color: #fff; }
+  .pill.upbtn:disabled, .pill.downbtn:disabled { opacity: .6; cursor: default; }
+  .pill.downbtn { border: 1px solid var(--no-fg); background: transparent; color: var(--no-fg); cursor: pointer; font-family: inherit; }
+  .pill.downbtn:hover:not(:disabled) { background: var(--no-fg); color: #fff; }
 
   /* avatar */
   .avatar {
@@ -218,6 +223,17 @@
     background: #0b0d11; color: #cdd6e4; border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: .7rem; max-height: 42vh; overflow: auto; white-space: pre; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
+  pre.pane.wrap { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+  .terminal .thead .wrapchk { margin-right: auto; display: flex; align-items: center; gap: .35rem; font-size: .8rem; color: var(--muted); cursor: pointer; white-space: nowrap; }
+  .terminal .thead .wrapchk input { margin: 0; }
+  .keyrow { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .5rem; }
+  .keybtn {
+    font: 600 .78rem/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    padding: .34rem .55rem; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--surface-2); color: var(--text); cursor: pointer; min-width: 2.1rem;
+  }
+  .keybtn:hover { background: var(--surface); border-color: var(--accent); }
+  .keybtn:active { transform: translateY(1px); }
   .typerow { display: flex; gap: .5rem; margin-top: .5rem; }
 
   /* ---- settings -------------------------------------------------------- */
@@ -261,6 +277,11 @@
   .edge { stroke: currentColor; stroke-width: 1.6; opacity: .55; }
   .gnode-t { fill: #fff; font-weight: 700; font-size: 11px; }
   .gnode-l { fill: var(--muted); font-size: 10px; }
+  .gnode { cursor: pointer; }
+  .gnode circle { transition: opacity .12s; }
+  .gnode:hover circle, .gnode:focus circle { opacity: .82; }
+  .gnode:hover .gnode-l, .gnode:focus .gnode-l { fill: var(--text); }
+  .gnode:focus { outline: none; }
 
   .hide { display: none !important; }
 

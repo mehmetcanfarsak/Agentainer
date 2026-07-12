@@ -20,6 +20,7 @@
     tab: "mail",          // mail | terminal (agent view)
     config: null,         // last /api/config
     telegram: null,       // last /api/telegram
+    wrap: (() => { try { return !!localStorage.getItem("paneWrap"); } catch (_) { return false; } })(),
   };
   const timers = {};
 
@@ -168,10 +169,16 @@
     const st = a.busy ? '<span class="pill busy">busy</span>' : '<span class="pill mute">idle</span>';
     const un = a.unread ? `<span class="pill busy">${a.unread} unread</span>` : "";
     const q = a.queue_depth ? `<span class="pill mute">${a.queue_depth} queued</span>` : "";
-    return run + st + un + q;
+    // A down agent gets a Start button; a running one gets a Stop button.
+    const act = a.running
+      ? `<button class="pill downbtn" data-down="${esc(a.name)}">■ Stop</button>`
+      : `<button class="pill upbtn" data-up="${esc(a.name)}">▶ Start</button>`;
+    return run + st + act + un + q;
   }
 
   function renderAgents() {
+    // Clear any prior poll timer so a poll-triggered re-render can't stack them.
+    if (timers.status) { clearInterval(timers.status); delete timers.status; }
     const agents = (state.status && state.status.agents) || [];
     const cards = agents.map((a) => `
       <div class="card agentcard" data-agent="${esc(a.name)}">
@@ -196,6 +203,10 @@
     $("refreshBtn").onclick = pollStatus;
     for (const c of document.querySelectorAll(".agentcard"))
       c.onclick = () => openAgent(c.dataset.agent);
+    for (const g of document.querySelectorAll(".gnode")) {
+      g.onclick = () => openAgent(g.dataset.agent);
+      g.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openAgent(g.dataset.agent); } };
+    }
     // Lazily enrich each card's role text (kept out of /api/status to stay light).
     agents.forEach((a) => apiGet("/api/agent?agent=" + encodeURIComponent(a.name))
       .then((d) => { const n = document.querySelector(`[data-role="${cssq(a.name)}"]`); if (n) n.textContent = (d.agent && d.agent.role) || "(no role set)"; })
@@ -205,17 +216,56 @@
 
   function cssq(s) { return String(s).replace(/"/g, '\\"'); }
 
+  // Bring one agent up (from a `.upbtn` on a card or the mail header).
+  function startAgent(name, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = "starting…"; }
+    apiPost("/api/up", { agent: name }).then((res) => {
+      if (!res.ok) {
+        toast("error: " + (res.j.error || "failed"));
+        if (btn) { btn.disabled = false; btn.textContent = "▶ Start"; }
+        return;
+      }
+      toast(res.j.started ? "starting " + name : name + " already running");
+      // Give the CLI a moment to open its tmux session, then refresh.
+      setTimeout(() => { pollStatus(); refreshMailStatus(); }, 800);
+    });
+  }
+
+  // Take one agent down (kill its tmux session). Config is left untouched.
+  function stopAgent(name, btn) {
+    if (!confirm("Stop " + name + "? Its tmux session (and any in-flight turn) will be killed.")) return;
+    if (btn) { btn.disabled = true; btn.textContent = "stopping…"; }
+    apiPost("/api/down", { agent: name }).then((res) => {
+      if (!res.ok) {
+        toast("error: " + (res.j.error || "failed"));
+        if (btn) { btn.disabled = false; btn.textContent = "■ Stop"; }
+        return;
+      }
+      toast(res.j.stopped ? "stopped " + name : name + " already down");
+      setTimeout(() => { pollStatus(); refreshMailStatus(); }, 400);
+    });
+  }
+
   function pollStatus() {
     apiGet("/api/status").then((data) => {
       state.status = data;
       syncAvailability(data.user_available);
       $("swarmMeta").textContent = (data.name || "swarm") + " · " + ((data.agents || []).length) + " agents";
       if (state.view === "agents") {
-        // Update only the pill rows in place so we don't stomp scroll / role text.
-        (data.agents || []).forEach((a) => {
-          const card = document.querySelector(`.agentcard[data-agent="${cssq(a.name)}"] .meta`);
-          if (card) card.innerHTML = statusPills(a);
-        });
+        const agents = data.agents || [];
+        const shown = Array.from(document.querySelectorAll(".agentcard")).map((c) => c.dataset.agent);
+        const same = shown.length === agents.length && agents.every((a, i) => shown[i] === a.name);
+        if (!same) {
+          // Agent set changed (added / removed / brought up elsewhere): rebuild
+          // the whole view so new cards and the topology graph appear.
+          renderAgents();
+        } else {
+          // Same set: patch pill rows in place so we don't stomp scroll / role text.
+          agents.forEach((a) => {
+            const card = document.querySelector(`.agentcard[data-agent="${cssq(a.name)}"] .meta`);
+            if (card) card.innerHTML = statusPills(a);
+          });
+        }
       }
     }).catch((e) => banner(e.message));
   }
@@ -249,7 +299,9 @@
     const circles = nodes.map((n) => {
       const p = pos[n];
       const fill = n === "user" ? "hsl(215 62% 48%)" : `hsl(${hueFor(n)} 62% 48%)`;
-      return `<g><circle cx="${p.x}" cy="${p.y}" r="19" fill="${fill}"/>
+      const clickable = n !== "user";
+      return `<g${clickable ? ` class="gnode" data-agent="${esc(n)}" role="button" tabindex="0" aria-label="open ${esc(n)}"` : ""}>
+        <circle cx="${p.x}" cy="${p.y}" r="19" fill="${fill}"/>
         <text x="${p.x}" y="${p.y + 4}" text-anchor="middle" class="gnode-t">${esc(initials(n))}</text>
         <text x="${p.x}" y="${p.y + 36}" text-anchor="middle" class="gnode-l">${esc(n === "user" ? "you" : n)}</text></g>`;
     }).join("");
@@ -356,18 +408,26 @@
       <div class="card terminal">
         <div class="thead">
           <b>Live terminal · ${esc(state.agent)}</b>
+          <label class="wrapchk"><input type="checkbox" id="wrapPane" ${state.wrap ? "checked" : ""}/> Wrap text</label>
           <span class="muted" style="font-size:.78rem">capture-pane · refreshes 2s</span>
         </div>
-        <pre class="pane" id="pane">— loading —</pre>
+        <pre class="pane${state.wrap ? " wrap" : ""}" id="pane">— loading —</pre>
+        <div class="keyrow">${KEYS.map((k) => `<button class="keybtn" data-key="${esc(k.key)}" title="${esc(k.title)}">${esc(k.label)}</button>`).join("")}</div>
         <div class="typerow">
           <input class="field" id="typeText" placeholder="Type straight into ${esc(state.agent)}'s session, press Enter…" />
           <button class="btn" id="typeSend">Send</button>
         </div>
-        <p class="muted" style="font-size:.8rem;margin:.5rem 0 0">Types directly into the tmux pane (bypasses mail). An empty pane means the agent's session isn't running.</p>
+        <p class="muted" style="font-size:.8rem;margin:.5rem 0 0">Types directly into the tmux pane (bypasses mail). The keys above send a single control keystroke (e.g. Esc to dismiss a prompt). An empty pane means the agent's session isn't running.</p>
       </div>`;
     const inp = $("typeText");
     inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendType(); } });
     $("typeSend").onclick = sendType;
+    for (const b of document.querySelectorAll(".keybtn")) b.onclick = () => sendKey(b.dataset.key);
+    $("wrapPane").onchange = (e) => {
+      state.wrap = e.target.checked;
+      try { localStorage.setItem("paneWrap", state.wrap ? "1" : ""); } catch (_) {}
+      $("pane").classList.toggle("wrap", state.wrap);
+    };
     loadPane();
     timers.pane = setInterval(() => { loadPane(); refreshMailStatus(); }, 2000);
   }
@@ -449,7 +509,13 @@
 
   function renderCompose() {
     const area = $("composeArea"); if (!area) return;
-    if (state.peer === "user") {
+    const mode = state.peer === "user" ? "compose" : "note";
+    // Idempotent: background polls call this every few seconds. Rebuilding the
+    // textarea would wipe whatever the user is typing (and drop focus), so only
+    // touch the DOM when the mode actually changes.
+    if (area.dataset.mode === mode) return;
+    area.dataset.mode = mode;
+    if (mode === "compose") {
       area.innerHTML = `
         <div class="compose">
           <textarea class="field" id="reply" rows="1" placeholder="Message ${esc(state.agent)} as the user…"></textarea>
@@ -476,6 +542,29 @@
   }
 
   // ---- terminal (live pane + direct type-in) -----------------------------
+
+  // Control keys offered under the pane. `key` is a tmux key name the backend
+  // whitelists (lib/tmux.py ALLOWED_KEYS).
+  const KEYS = [
+    { key: "Escape", label: "Esc", title: "Escape" },
+    { key: "Enter", label: "Enter", title: "Enter / Return" },
+    { key: "Tab", label: "Tab", title: "Tab" },
+    { key: "Up", label: "↑", title: "Up arrow" },
+    { key: "Down", label: "↓", title: "Down arrow" },
+    { key: "Left", label: "←", title: "Left arrow" },
+    { key: "Right", label: "→", title: "Right arrow" },
+    { key: "C-c", label: "Ctrl-C", title: "Interrupt (Ctrl-C)" },
+    { key: "C-u", label: "Ctrl-U", title: "Clear line (Ctrl-U)" },
+    { key: "C-l", label: "Ctrl-L", title: "Redraw / clear (Ctrl-L)" },
+  ];
+
+  function sendKey(key) {
+    apiPost("/api/key", { agent: state.agent, key }).then((res) => {
+      if (!res.ok) { toast("error: " + (res.j.error || "failed")); return; }
+      toast(key + " → " + state.agent);
+      setTimeout(loadPane, 300);
+    });
+  }
 
   function loadPane() {
     apiGet("/api/pane?agent=" + encodeURIComponent(state.agent)).then((d) => {
@@ -761,4 +850,14 @@
   $("availToggle").addEventListener("change", toggleAvailability);
   for (const b of document.querySelectorAll(".navbtn"))
     b.addEventListener("click", () => go(b.dataset.view));
+  // Delegated: Start buttons are re-created by status polls, so listen once here
+  // instead of re-wiring on every render. stopPropagation keeps a Start click on
+  // an agent card from also opening that agent's mail page.
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest) return;
+    const up = e.target.closest("[data-up]");
+    if (up) { e.stopPropagation(); startAgent(up.dataset.up, up); return; }
+    const down = e.target.closest("[data-down]");
+    if (down) { e.stopPropagation(); stopAgent(down.dataset.down, down); }
+  });
 })();

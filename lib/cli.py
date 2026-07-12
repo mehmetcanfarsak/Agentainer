@@ -354,6 +354,15 @@ def cmd_up(args) -> int:
     info(f"swarm {cfg.name!r} is up with {len(started)} agent(s)")
     if started:
         info(f"attach with:  tmux attach -t {started[0].session}")
+        # Surface the exact serve command so the operator doesn't have to recall
+        # the flags. A token is required for any non-loopback bind (CLAUDE.md
+        # invariant), so we generate one and print it -- drop --host/--token for
+        # the safe 127.0.0.1-only bind.
+        token = gen_ui_token()
+        info(
+            "you can use the UI with:  agentainer serve --host 0.0.0.0 "
+            f"-c {cfg.path} --token {token} --port 8000"
+        )
     return 0
 
 

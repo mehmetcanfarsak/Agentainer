@@ -34,6 +34,9 @@ The set of endpoints:
   GET /api/availability       -> the user's receive-mail availability toggle
   POST /api/send              -> body {"to","text"} -> mail.send_as_user
   POST /api/type              -> body {"agent","text"} -> tmux.paste_into (direct pane input)
+  POST /api/key               -> body {"agent","key"} -> tmux.send_key (Escape, C-c, ...)
+  POST /api/up                -> body {"agent"} -> reconcile.start_one (launch if down)
+  POST /api/down              -> body {"agent"} -> reconcile.stop_one (kill session if up)
   POST /api/config            -> body {"swarm": {...}} -> persist swarm settings to YAML
   POST /api/availability      -> body {"available": bool} -> toggle + persist
   POST /api/agent/add         -> body {"name","type","command",...} -> add + persist
@@ -248,6 +251,12 @@ class UIHandler(BaseHTTPRequestHandler):
             self._api_send(raw)
         elif path == "/api/type":
             self._api_type(raw)
+        elif path == "/api/key":
+            self._api_key(raw)
+        elif path == "/api/up":
+            self._api_up(raw)
+        elif path == "/api/down":
+            self._api_down(raw)
         elif path == "/api/config":
             self._api_config_post(raw)
         elif path == "/api/availability":
@@ -682,6 +691,63 @@ class UIHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": str(exc)})
             return
         self._send_json(200, {"ok": bool(ok), "agent": to})
+
+    def _api_key(self, raw: bytes) -> None:
+        data = self._json_body(raw)
+        if data is None:
+            return
+        to = data.get("agent") or data.get("to")
+        key = data.get("key")
+        if not to or not isinstance(key, str) or key == "":
+            self._send_json(400, {"error": "missing agent/key"})
+            return
+        try:
+            a = self.cfg.get(to)
+        except Exception:
+            self._send_json(404, {"error": "unknown agent"})
+            return
+        try:
+            ok = tmux.send_key(self.cfg, a.session, key)
+        except tmux.SwarmError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(200, {"ok": bool(ok), "agent": to, "key": key})
+
+    def _api_up(self, raw: bytes) -> None:
+        data = self._json_body(raw)
+        if data is None:
+            return
+        name = data.get("agent") or data.get("name")
+        if not name:
+            self._send_json(400, {"error": "missing agent"})
+            return
+        if name not in self.cfg.names():
+            self._send_json(404, {"error": "unknown agent"})
+            return
+        try:
+            started = reconcile.start_one(self.cfg, name)
+        except Exception as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(200, {"ok": True, "agent": name, "started": bool(started)})
+
+    def _api_down(self, raw: bytes) -> None:
+        data = self._json_body(raw)
+        if data is None:
+            return
+        name = data.get("agent") or data.get("name")
+        if not name:
+            self._send_json(400, {"error": "missing agent"})
+            return
+        if name not in self.cfg.names():
+            self._send_json(404, {"error": "unknown agent"})
+            return
+        try:
+            stopped = reconcile.stop_one(self.cfg, name)
+        except Exception as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(200, {"ok": True, "agent": name, "stopped": bool(stopped)})
 
     # -- API: config (persist swarm settings) ---------------------------------
 

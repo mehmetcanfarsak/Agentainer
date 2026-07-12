@@ -226,6 +226,32 @@ def paste_into(
         return _paste_locked(cfg, session, body, enter, needle)
 
 
+# Named control keys the UI may send straight into a pane. Restricting to a
+# whitelist keeps `send-keys` from being handed an arbitrary token; these are
+# tmux key names (see `man tmux`, KEY BINDINGS).
+ALLOWED_KEYS = {
+    "Escape", "Enter", "Tab", "BSpace", "Space",
+    "Up", "Down", "Left", "Right",
+    "Home", "End", "PageUp", "PageDown",
+    "C-c", "C-d", "C-u", "C-l", "C-a", "C-e", "C-r", "C-z",
+}
+
+
+def send_key(cfg: SwarmConfig, session: str, key: str) -> bool:
+    """Send a single named control key (e.g. ``Escape``, ``C-c``) to a pane.
+
+    Unlike :func:`paste_into` this does no echo verification -- control keys
+    leave nothing in the input box to confirm against -- it just presses the key.
+    """
+    if key not in ALLOWED_KEYS:
+        raise SwarmError(f"key {key!r} is not allowed")
+    if not session_exists(session):
+        raise SwarmError(f"tmux session {session!r} is not running")
+    with pane_lock(cfg, session):
+        tmux("send-keys", "-t", session, key)
+    return True
+
+
 def _paste_locked(
     cfg: SwarmConfig, session: str, body: str, enter: bool, needle: str | None = None
 ) -> bool:

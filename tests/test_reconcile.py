@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from unittest import mock
 from pathlib import Path
 
+import pytest
+
 import reconcile
 import config as cfgmod
 import tmux as tmuxmod
@@ -129,6 +131,81 @@ def test_reconcile_can_disable_start_and_stop(tmp_path):
         )
     assert result["started"] == []
     assert result["stopped"] == []
+
+
+def test_start_one_launches_when_down(tmp_path):
+    cfg = load_swarm(tmp_path, AGENTS)
+    started = []
+    with mock.patch.object(tmuxmod, "session_exists", return_value=False):
+        out = reconcile.start_one(
+            cfg, "alice", _start_fn=lambda c, a, r: started.append(a.name)
+        )
+    assert out is True
+    assert started == ["alice"]
+
+
+def test_start_one_noop_when_running(tmp_path):
+    cfg = load_swarm(tmp_path, AGENTS)
+    started = []
+    with mock.patch.object(tmuxmod, "session_exists", return_value=True):
+        out = reconcile.start_one(
+            cfg, "alice", _start_fn=lambda c, a, r: started.append(a.name)
+        )
+    assert out is False
+    assert started == []
+
+
+def test_start_one_unknown_agent(tmp_path):
+    cfg = load_swarm(tmp_path, AGENTS)
+    with mock.patch.object(tmuxmod, "session_exists", return_value=False):
+        with pytest.raises(cfgmod.ConfigError):
+            reconcile.start_one(cfg, "ghost", _start_fn=lambda *a, **k: None)
+
+
+def test_start_one_default_start_fn(tmp_path):
+    # No _start_fn: exercise the lazy `import cli` default-launcher branch.
+    import cli
+
+    cfg = load_swarm(tmp_path, AGENTS)
+    launched = []
+    with mock.patch.object(tmuxmod, "session_exists", return_value=False), mock.patch.object(
+        cli, "launch_agent_full", lambda c, a, r=None: launched.append(a.name)
+    ):
+        out = reconcile.start_one(cfg, "alice")
+    assert out is True
+    assert launched == ["alice"]
+
+
+def test_stop_one_kills_when_running(tmp_path):
+    cfg = load_swarm(tmp_path, AGENTS)
+    killed = []
+
+    def fake_tmux(*args, **kw):
+        if args and args[0] == "kill-session":
+            killed.append(args)
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    with mock.patch.object(tmuxmod, "session_exists", return_value=True), mock.patch.object(
+        tmuxmod, "tmux", side_effect=fake_tmux
+    ):
+        out = reconcile.stop_one(cfg, "alice")
+    assert out is True
+    assert any(a[2] == "=t-alice" for a in killed)
+
+
+def test_stop_one_noop_when_down(tmp_path):
+    cfg = load_swarm(tmp_path, AGENTS)
+    with mock.patch.object(tmuxmod, "session_exists", return_value=False), mock.patch.object(
+        tmuxmod, "tmux", side_effect=AssertionError("should not kill a down agent")
+    ):
+        out = reconcile.stop_one(cfg, "alice")
+    assert out is False
+
+
+def test_stop_one_unknown_agent(tmp_path):
+    cfg = load_swarm(tmp_path, AGENTS)
+    with pytest.raises(cfgmod.ConfigError):
+        reconcile.stop_one(cfg, "ghost")
 
 
 # --------------------------------------------------------------------------

@@ -596,6 +596,122 @@ def test_api_type_missing_and_unknown_and_badjson(cfg):
             assert e.code == 400
 
 
+def test_api_key_success(cfg):
+    with mock_tmux(), mock.patch.object(ui.tmux, "send_key", return_value=True):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/key", "sekret", {"agent": "alice", "key": "Escape"})
+            assert code == 200
+            j = json.loads(body)
+            assert j["ok"] is True and j["key"] == "Escape"
+
+
+def test_api_key_swarmerror(cfg):
+    def boom(*a, **k):
+        raise ui.tmux.SwarmError("bad key")
+    with mock_tmux(), mock.patch.object(ui.tmux, "send_key", boom):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/key", "sekret", {"agent": "alice", "key": "Nope"})
+            assert code == 400
+            assert "bad key" in json.loads(body)["error"]
+
+
+def test_api_key_missing_and_unknown_and_badjson(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        assert _post(h, "/api/key", "sekret", {"key": "Escape"})[0] == 400   # no agent
+        assert _post(h, "/api/key", "sekret", {"agent": "alice"})[0] == 400  # no key
+        assert _post(h, "/api/key", "sekret", {"agent": "ghost", "key": "Escape"})[0] == 404
+        url = f"http://127.0.0.1:{h.port}/api/key?token=sekret"
+        req = urllib.request.Request(url, data=b"nope", method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req)
+            assert False
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+
+
+def test_api_up_success(cfg):
+    with mock_tmux(), mock.patch.object(ui.reconcile, "start_one", return_value=True):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/up", "sekret", {"agent": "alice"})
+            assert code == 200
+            j = json.loads(body)
+            assert j["ok"] is True and j["started"] is True
+
+
+def test_api_up_already_running(cfg):
+    with mock_tmux(), mock.patch.object(ui.reconcile, "start_one", return_value=False):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/up", "sekret", {"agent": "alice"})
+            assert code == 200
+            assert json.loads(body)["started"] is False
+
+
+def test_api_up_error(cfg):
+    def boom(*a, **k):
+        raise RuntimeError("launch failed")
+    with mock_tmux(), mock.patch.object(ui.reconcile, "start_one", boom):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/up", "sekret", {"agent": "alice"})
+            assert code == 400
+            assert "launch failed" in json.loads(body)["error"]
+
+
+def test_api_up_missing_and_unknown_and_badjson(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        assert _post(h, "/api/up", "sekret", {})[0] == 400            # no agent
+        assert _post(h, "/api/up", "sekret", {"agent": "ghost"})[0] == 404
+        url = f"http://127.0.0.1:{h.port}/api/up?token=sekret"
+        req = urllib.request.Request(url, data=b"nope", method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req)
+            assert False
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+
+
+def test_api_down_success(cfg):
+    with mock_tmux(), mock.patch.object(ui.reconcile, "stop_one", return_value=True):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/down", "sekret", {"agent": "alice"})
+            assert code == 200
+            j = json.loads(body)
+            assert j["ok"] is True and j["stopped"] is True
+
+
+def test_api_down_already_down(cfg):
+    with mock_tmux(), mock.patch.object(ui.reconcile, "stop_one", return_value=False):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/down", "sekret", {"agent": "alice"})
+            assert code == 200
+            assert json.loads(body)["stopped"] is False
+
+
+def test_api_down_error(cfg):
+    def boom(*a, **k):
+        raise RuntimeError("kill failed")
+    with mock_tmux(), mock.patch.object(ui.reconcile, "stop_one", boom):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/down", "sekret", {"agent": "alice"})
+            assert code == 400
+            assert "kill failed" in json.loads(body)["error"]
+
+
+def test_api_down_missing_and_unknown_and_badjson(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        assert _post(h, "/api/down", "sekret", {})[0] == 400            # no agent
+        assert _post(h, "/api/down", "sekret", {"agent": "ghost"})[0] == 404
+        url = f"http://127.0.0.1:{h.port}/api/down?token=sekret"
+        req = urllib.request.Request(url, data=b"nope", method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req)
+            assert False
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+
+
 # --------------------------------------------------------------------------
 # config / availability (POST -> persist to YAML)
 # --------------------------------------------------------------------------

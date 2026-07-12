@@ -319,6 +319,19 @@ def test_up_supervisor_absent(monkeypatch, tmp_path):
         assert cli.main(["up", "-c", str(cfg.path)]) == 0
 
 
+def test_up_prints_serve_hint(monkeypatch, tmp_path, capsys):
+    """After `up`, the operator should see the exact serve command to launch the UI."""
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    patch_launch(monkeypatch, n_agents=2)
+    with mock_tmux(has_session=False):
+        assert cli.main(["up", "-c", str(cfg.path), "--no-supervise"]) == 0
+    err = capsys.readouterr().err
+    assert "agentainer serve --host 0.0.0.0" in err
+    assert str(cfg.path) in err
+    assert "--token" in err
+    assert "--port 8000" in err
+
+
 def test_up_first_prompt_is_standby(monkeypatch, tmp_path):
     """The first prompt pasted at `up` must be the standby notice, not the raw role."""
     cfg = build(tmp_path, GENERAL_AGENTS)

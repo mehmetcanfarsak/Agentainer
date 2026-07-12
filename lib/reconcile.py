@@ -366,6 +366,39 @@ def reconcile(cfg, *, start_missing: bool = True, stop_extra: bool = True, _star
     }
 
 
+def start_one(cfg, name: str, *, _start_fn=None) -> bool:
+    """Bring a single configured agent up if its tmux session isn't running.
+
+    Returns True if the agent was (re)launched, False if it was already running.
+    Raises KeyError via ``cfg.get`` for an unknown name.
+    """
+    agent = cfg.get(name)
+    if tmux.session_exists(agent.session):
+        return False
+    start_fn = _start_fn
+    if start_fn is None:
+        import cli as _cli  # lazy: avoid an import cycle with cli <-> reconcile
+
+        start_fn = _cli.launch_agent_full
+    _start_agent(cfg, agent, start_fn)
+    info(f"start_one: started {name}")
+    return True
+
+
+def stop_one(cfg, name: str) -> bool:
+    """Kill a single agent's tmux session if it's running (config is untouched).
+
+    Returns True if a running session was killed, False if it was already down.
+    Raises ConfigError via ``cfg.get`` for an unknown name.
+    """
+    agent = cfg.get(name)
+    if not tmux.session_exists(agent.session):
+        return False
+    tmux.tmux("kill-session", "-t", f"={agent.session}", check=False, capture=True)
+    info(f"stop_one: stopped {name}")
+    return True
+
+
 # --------------------------------------------------------------------------
 # CLI handlers
 # --------------------------------------------------------------------------

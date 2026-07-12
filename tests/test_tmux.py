@@ -163,6 +163,28 @@ def test_paste_into_empty_body():
         assert tmux.paste_into(None, "t-A", "") is False
 
 
+# ------------------------------------------------------------------- send_key
+
+def test_send_key_success(tmp_path):
+    cfg = load_swarm(tmp_path, "- {name: A, command: 'true'}\n")
+    with mock_tmux(has_session=True):
+        assert tmux.send_key(cfg, "t-A", "Escape") is True
+
+
+def test_send_key_not_allowed(tmp_path):
+    cfg = load_swarm(tmp_path, "- {name: A, command: 'true'}\n")
+    with mock_tmux(has_session=True):
+        with pytest.raises(tmux.SwarmError):
+            tmux.send_key(cfg, "t-A", "rm -rf")
+
+
+def test_send_key_session_missing(tmp_path):
+    cfg = load_swarm(tmp_path, "- {name: A, command: 'true'}\n")
+    with mock_tmux(has_session=False):
+        with pytest.raises(tmux.SwarmError):
+            tmux.send_key(cfg, "t-A", "Escape")
+
+
 # -------------------------------------------------------------- _paste_locked
 
 def test_paste_locked_failure(tmp_path):
