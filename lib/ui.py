@@ -32,16 +32,21 @@ The set of endpoints:
   GET /api/pane?agent=        -> terminal snapshot of an agent's tmux pane (token required)
   GET /api/config             -> raw swarm settings + agents (for the editor)
   GET /api/availability       -> the user's receive-mail availability toggle
+  GET /api/templates          -> bundled example swarms (onboarding, empty swarm)
+  GET /api/rate?window=       -> opt-in per-agent messages/min over last `window` min
   POST /api/send              -> body {"to","text"} -> mail.send_as_user
   POST /api/type              -> body {"agent","text"} -> tmux.paste_into (direct pane input)
   POST /api/key               -> body {"agent","key"} -> tmux.send_key (Escape, C-c, ...)
   POST /api/up                -> body {"agent"} -> reconcile.start_one (launch if down)
   POST /api/down              -> body {"agent"} -> reconcile.stop_one (kill session if up)
+  POST /api/up_all            -> reconcile.start_all (launch every down agent; no body)
+  POST /api/down_all          -> reconcile.stop_all (kill every running session; no body)
   POST /api/config            -> body {"swarm": {...}} -> persist swarm settings to YAML
   POST /api/availability      -> body {"available": bool} -> toggle + persist
   POST /api/agent/add         -> body {"name","type","command",...} -> add + persist
   POST /api/agent/edit        -> body {"name","fields": {...}} -> edit + persist
   POST /api/agent/remove      -> body {"name"} -> stop session + remove + persist
+  POST /api/templates/apply   -> body {"name"} -> seed an empty swarm from a template
 
 Every mutation rewrites ``agentainer.yaml`` (via lib/reconcile's stdlib emitter,
 so the no-PyYAML path stays live) and swaps ``UIHandler.cfg`` for the reloaded
@@ -237,6 +242,10 @@ class UIHandler(BaseHTTPRequestHandler):
             self._api_availability()
         elif path == "/api/telegram":
             self._api_telegram()
+        elif path == "/api/templates":
+            self._api_templates()
+        elif path == "/api/rate":
+            self._api_rate()
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -257,6 +266,10 @@ class UIHandler(BaseHTTPRequestHandler):
             self._api_up(raw)
         elif path == "/api/down":
             self._api_down(raw)
+        elif path == "/api/up_all":
+            self._api_up_all(raw)
+        elif path == "/api/down_all":
+            self._api_down_all(raw)
         elif path == "/api/config":
             self._api_config_post(raw)
         elif path == "/api/availability":
@@ -269,6 +282,8 @@ class UIHandler(BaseHTTPRequestHandler):
             self._api_agent_remove(raw)
         elif path == "/api/telegram":
             self._api_telegram_post(raw)
+        elif path == "/api/templates/apply":
+            self._api_templates_apply(raw)
         elif path == "/api/telegram/test":
             self._api_telegram_test(raw)
         elif path == "/api/telegram/poll":
@@ -295,9 +310,46 @@ class UIHandler(BaseHTTPRequestHandler):
             return None
         return _supervisor.supervisor_alive(self.cfg)
 
-    def _agent_status(self, a) -> dict:
+    def _pending_user_senders(self) -> set:
+        """Names of agents whose mail to the ``user`` is still awaiting a reply.
+
+        User-directed mail is enqueued into ``queue_dir/user`` and sits there
+        until the operator reads it, so an agent named in that queue is one that
+        is waiting on *you* -- the signal behind the ``attention`` state.
+        """
+        senders: set = set()
+        udir = self.cfg.queue_dir / "user"
+        if udir.exists():
+            for f in udir.iterdir():
+                if f.is_file():
+                    senders.add(self._parse_msg(f.read_text())["from"])
+        return senders
+
+    def _agent_state(self, a, running: bool, busy_state, pending: set):
+        """Collapse the raw signals into one truthful state + its working age.
+
+        Priority: stopped > working > stalled > attention > waiting. ``stalled``
+        is the anomaly ``busy_info`` hides -- a turn that has looked busy past
+        ``busy_timeout_ms`` (the completion signal was lost), which would
+        otherwise silently read as idle.
+        """
+        if not running:
+            return "stopped", 0
+        if busy_state is not None:
+            return "working", int(busy_state.get("age_s", 0))
+        if a.busy_check:
+            st = turn.turn_state(self.cfg, a.name)
+            if st.get("delivered", 0) > st.get("completed", 0):
+                return "stalled", 0
+        if a.name in pending:
+            return "attention", 0
+        return "waiting", 0
+
+    def _agent_status(self, a, pending=None) -> dict:
         """The live status row for one agent (shared by /api/status + /api/agent)."""
         cfg = self.cfg
+        if pending is None:
+            pending = self._pending_user_senders()
         mp = cfg.mail_paths(a)
         queue_dir = cfg.queue_dir / a.name
         queue_depth = (
@@ -311,11 +363,17 @@ class UIHandler(BaseHTTPRequestHandler):
             if inbox_dir.exists()
             else 0
         )
+        running = tmux.session_exists(a.session)
+        busy_state = turn.busy_info(cfg, a)
+        state, working_s = self._agent_state(a, running, busy_state, pending)
         return {
             "name": a.name,
             "type": a.type,
-            "running": tmux.session_exists(a.session),
-            "busy": turn.busy_info(cfg, a) is not None,
+            "running": running,
+            "busy": busy_state is not None,
+            "state": state,
+            "working_s": working_s,
+            "awaiting_user": a.name in pending,
             "queue_depth": queue_depth,
             "unread": unread,
             "can_talk_to": a.can_talk_to,
@@ -323,7 +381,12 @@ class UIHandler(BaseHTTPRequestHandler):
 
     def _api_status(self) -> None:
         cfg = self.cfg
-        agents = [self._agent_status(a) for a in cfg.agents]
+        pending = self._pending_user_senders()
+        agents = [self._agent_status(a, pending) for a in cfg.agents]
+        udir = cfg.queue_dir / "user"
+        attention = (
+            len([f for f in udir.iterdir() if f.is_file()]) if udir.exists() else 0
+        )
         self._send_json(
             200,
             {
@@ -331,6 +394,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 "root": str(cfg.root),
                 "user_available": bool(cfg.user_available),
                 "supervisor_alive": self._supervisor_alive(),
+                "attention": attention,
                 "agents": agents,
             },
         )
@@ -404,14 +468,13 @@ class UIHandler(BaseHTTPRequestHandler):
         except Exception:
             self._send_json(404, {"error": "unknown agent"})
             return
-        queue_dir = self.cfg.queue_dir / agent
         msgs = []
-        if queue_dir.exists():
-            for f in sorted(queue_dir.iterdir()):
-                if f.is_file():
-                    text = f.read_text()
-                    first = text.splitlines()[0] if text.strip() else ""
-                    msgs.append({"file": f.name, "text": first})
+        # FIFO (enqueue) order -- the order these will actually be delivered --
+        # not random message-id filename order (see mail.queued_files).
+        for f in mail.queued_files(self.cfg, agent):
+            text = f.read_text()
+            first = text.splitlines()[0] if text.strip() else ""
+            msgs.append({"file": f.name, "text": first})
         self._send_json(200, {"agent": agent, "queue": msgs})
 
     # -- API: pane (terminal snapshot) ---------------------------------------
@@ -749,6 +812,141 @@ class UIHandler(BaseHTTPRequestHandler):
             return
         self._send_json(200, {"ok": True, "agent": name, "stopped": bool(stopped)})
 
+    def _api_up_all(self, raw: bytes) -> None:
+        """Start every configured-but-not-running agent (body ignored)."""
+        try:
+            started = reconcile.start_all(self.cfg)
+        except Exception as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(200, {"ok": True, "started": started})
+
+    def _api_down_all(self, raw: bytes) -> None:
+        """Kill every running agent session (body ignored; config untouched)."""
+        try:
+            stopped = reconcile.stop_all(self.cfg)
+        except Exception as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(200, {"ok": True, "stopped": stopped})
+
+    # -- API: templates (bundled example swarms, for onboarding) ---------------
+
+    def _templates_dir(self) -> Path:
+        """The bundled ``examples/`` directory shipped alongside ``lib/``."""
+        return Path(__file__).resolve().parent.parent / "examples"
+
+    def _template_summary(self, path) -> str:
+        """First meaningful ``# comment`` line of an example (its description).
+
+        Skips decorative banners (``# ====``) and blank ``#`` lines so the card
+        shows the real one-line blurb, not a row of separators.
+        """
+        try:
+            for line in Path(path).read_text().splitlines():
+                s = line.strip()
+                if s.startswith("#"):
+                    s = s.lstrip("#").strip()
+                    if any(c.isalnum() for c in s):  # skip banners / blank comments
+                        return s[:160]
+                    continue
+                if s:  # first content line before any real comment -> no summary
+                    break
+        except OSError:  # pragma: no cover - unreadable file degrades to ""
+            pass
+        return ""
+
+    def _api_templates(self) -> None:
+        tdir = self._templates_dir()
+        out = []
+        if tdir.exists():
+            for p in sorted(tdir.glob("*.yaml")):
+                try:
+                    raw = reconcile.load_raw(p)
+                except Exception:
+                    continue
+                swarm = raw.get("swarm") or {}
+                title = swarm.get("name") or p.stem.replace("-", " ").replace("_", " ").title()
+                out.append({
+                    "name": p.stem,
+                    "title": title,
+                    "summary": self._template_summary(p),
+                    "agents": len(raw.get("agents") or []),
+                })
+        self._send_json(200, {"templates": out})
+
+    def _api_templates_apply(self, raw: bytes) -> None:
+        data = self._json_body(raw)
+        if data is None:
+            return
+        name = data.get("name")
+        if not name:
+            self._send_json(400, {"error": "missing name"})
+            return
+        # Templates seed a fresh swarm; refuse if agents already exist.
+        if self.cfg.names():
+            self._send_json(400, {"error": "swarm already has agents"})
+            return
+        tdir = self._templates_dir()
+        # Validate against the real listing so ``name`` can't escape the dir.
+        valid = {p.stem for p in tdir.glob("*.yaml")} if tdir.exists() else set()
+        if name not in valid:
+            self._send_json(404, {"error": "unknown template"})
+            return
+        try:
+            raw_tpl = reconcile.load_raw(tdir / f"{name}.yaml")
+            added = reconcile.apply_template(
+                self.cfg, raw_tpl.get("agents") or [], raw_tpl.get("defaults")
+            )
+            new_cfg = config.load(self.cfg.path)
+        except Exception as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        UIHandler.cfg = new_cfg
+        mail.init_mailboxes(new_cfg)
+        self._send_json(200, {"ok": True, "applied": name, "added": added})
+
+    # -- API: rate (opt-in per-agent message throughput) ----------------------
+
+    MESSAGE_KINDS = {"delivered", "user-send"}
+
+    def _api_rate(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        qs = parse_qs(urlparse(self.path).query)
+        try:
+            window = int(qs.get("window", ["5"])[0])
+        except ValueError:
+            window = 5
+        if window <= 0:
+            window = 5
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=window)
+        counts: dict = {}
+        total = 0
+        logfile = self.cfg.log_dir / "agentainer.jsonl"
+        if logfile.exists():
+            for line in logfile.read_text().splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("kind") not in self.MESSAGE_KINDS:
+                    continue
+                try:
+                    ts = datetime.fromisoformat(rec["ts"])
+                except (KeyError, ValueError):
+                    continue
+                if ts < cutoff:
+                    continue
+                agent = rec.get("agent") or "?"
+                counts[agent] = counts.get(agent, 0) + 1
+                total += 1
+        rates = {a: round(n / window, 2) for a, n in counts.items()}
+        self._send_json(200, {"window_min": window, "rates": rates, "total": total})
+
     # -- API: config (persist swarm settings) ---------------------------------
 
     def _api_config_post(self, raw: bytes) -> None:
@@ -860,8 +1058,9 @@ class UIHandler(BaseHTTPRequestHandler):
         if tmux.session_exists(a.session):
             tmux.tmux("kill-session", "-t", f"={a.session}", check=False, capture=True)
         try:
-            # Removing an agent that a peer still lists in can_talk_to leaves the
-            # reloaded config invalid (dangling reference) -- surface that as 400.
+            # remove_agent also strips the agent from every peer's can_talk_to,
+            # so this can't leave a dangling reference; any other failure is
+            # surfaced as 400 with the config left intact (see reconcile._commit).
             new_cfg = reconcile.remove_agent(self.cfg, name)
         except Exception as exc:
             self._send_json(400, {"error": str(exc)})

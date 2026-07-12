@@ -1,0 +1,135 @@
+# =============================================================================
+# 🛠️  Data-pipeline builder -- turn a "source -> destination" spec into a
+# working ETL pipeline: an architect hub takes the human's request, a designer
+# lays out the DAG + schema, an implementer writes the pipeline code, and a
+# tester writes the data-quality / contract tests. The architect delivers the
+# finished pipeline back to the user.
+#
+#   cp examples/data-pipeline-builder.yaml my-pipeline.yaml
+#   agentainer up   -c my-pipeline.yaml
+#   agentainer user available -c my-pipeline.yaml
+#   agentainer send -c my-pipeline.yaml --to architect \
+#     "Load daily Stripe payout CSVs from s3://acme-raw/stripe/ into a Postgres
+#      'payouts' table; dedupe on payout_id; partition by settlement date."
+#   agentainer down -c my-pipeline.yaml
+#
+# The communication graph is a hub-and-spoke, NOT a free-for-all: every request
+# and every deliverable passes through the architect, so one place owns the
+# contract instead of the design being negotiated twice.
+#
+#                         user
+#                          |
+#                       architect            (the hub: talks to all + user)
+#                       /   |    \
+#               designer implementer tester
+#                          \______/
+#                     (share ONE repo workdir)
+#
+# ...designer/implementer/tester never talk to each other -- they coordinate
+# through the architect. implementer + tester SHARE a single repo working
+# directory (the pipeline codebase), so their mailboxes are auto-namespaced with
+# a "<name>-" prefix -- see docs/use-cases/custom-workspace.md. The model never
+# sees the prefix; every nudge states the exact paths.
+#
+# Key-free: this file launches the REAL CLIs. For a no-API-key demo, swap each
+# `command` for a mock bash loop -- the mail mechanics are identical.
+# =============================================================================
+
+swarm:
+  name: data-pipeline
+  root: ./pipeline-workspace
+
+defaults:
+  can_talk_to: []            # tightened per agent below
+
+agents:
+  - name: architect
+    type: claude
+    can_talk_to: [designer, implementer, tester, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the DATA PIPELINE ARCHITECT and the only agent who talks to the
+      user. The user hands you a source -> destination spec (where data comes
+      from, where it must land, and the rules in between). Your job is to turn
+      that into a shipped ETL pipeline by coordinating three specialists; you do
+      not write pipeline code or tests yourself.
+      Your team: designer (the DAG + target schema + contracts), implementer
+      (writes the extraction/transform/load code), tester (writes the data-
+      quality and contract tests). implementer and tester share ONE repo
+      working directory -- the pipeline codebase.
+      Run it like this: (1) restate the request as a one-paragraph spec plus a
+      short acceptance list (sources, destination, cadence, idempotency/dedupe,
+      row-count and freshness expectations) and send both to the designer first;
+      (2) once the designer settles the DAG and the target schema, brief the
+      implementer with the design and the tester with the contracts to assert;
+      (3) require the tester's data-quality checks to pass before anything is
+      done; (4) when the pipeline meets the acceptance list, write the summary
+      (what it does, how to run it, known gaps) to outbox/user/. If the spec is
+      ambiguous (grain, timezone, late-arriving data), ask the user before
+      delegating -- do not invent requirements.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first to see who they are and whether they're
+      available) and finish your turn. You may message the agents in your
+      can_talk_to.
+
+  - name: designer
+    type: claude
+    can_talk_to: [architect]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the PIPELINE DESIGNER. Given the architect's spec, produce the
+      smallest design that satisfies it and write it to DESIGN.md: the DAG (the
+      ordered stages -- extract, validate, transform, load -- and their
+      dependencies), the target schema (table/columns/types, partition and sort
+      keys), the source contract (expected fields, types, nullability), and the
+      idempotency strategy (natural key, dedupe rule, how re-runs stay safe). Be
+      concrete: "a transform step" is not a design; the exact column mapping and
+      dtype casts are. Name the data-quality assertions the tester should enforce
+      (uniqueness, not-null, referential, row-count/freshness bounds). If the
+      spec is ambiguous about grain, timezone, or late-arriving data, ask the
+      architect; do not guess.
+      MAILBOX: read inbox/, act, move it to read/ when done. To send, write into
+      outbox/architect/ (check its about.md first) and finish your turn.
+
+  - name: implementer
+    type: codex
+    can_talk_to: [architect, tester]
+    command: "codex --yolo"
+    workdir: ./pipeline-workspace/repo
+    role: |
+      You are the PIPELINE IMPLEMENTER. Build the ETL pipeline described in the
+      designer's DESIGN.md, in your shared repo working directory. Implement the
+      stages exactly as designed: extraction from the source, the validation and
+      transform steps, and the idempotent load into the target. Keep steps small
+      and independently runnable; make the load re-runnable (upsert/dedupe on the
+      natural key, never duplicate on retry). Do not silently change the contract
+      -- if the design is wrong or impossible, argue it with the architect. When
+      a unit of work runs end to end, write a short note to outbox/tester/ (what
+      you built, how to invoke it, what you're unsure about) so tests can be
+      written against it.
+      NOTE: you share this repo directory with the tester. Coordinate through
+      mail; do not clobber each other's files.
+      MAILBOX: read inbox/, act, move it to read/ when done. To send, write into
+      outbox/<name>/ (check about.md first) and finish your turn.
+
+  - name: tester
+    type: codex
+    can_talk_to: [architect, implementer]
+    command: "codex --yolo"
+    workdir: ./pipeline-workspace/repo
+    role: |
+      You are the DATA-QUALITY / CONTRACT TESTER. Write the tests that decide
+      whether the pipeline is trustworthy, in the shared repo working directory.
+      Cover the source contract (fields present, types, nullability), the
+      transform logic (correct casts, mappings, edge cases -- empty batch, nulls,
+      duplicates, late data), and the loaded output (uniqueness of the natural
+      key, not-null constraints, row-count and freshness bounds from DESIGN.md).
+      Prefer a failing reproduction over an opinion; assert on real data shapes,
+      not vibes. When you find a defect, report it to the implementer with a
+      concrete case (input -> expected -> actual); escalate to the architect only
+      when a failure threatens the acceptance criteria.
+      NOTE: you share this repo directory with the implementer. Coordinate
+      through mail; do not clobber each other's files.
+      MAILBOX: read inbox/, act, move it to read/ when done. To send, write into
+      outbox/<name>/ (check about.md first) and finish your turn.

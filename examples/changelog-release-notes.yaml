@@ -1,0 +1,114 @@
+# =============================================================================
+# 📝 Changelog / release-notes swarm -- mine git commits → group into
+# user-facing notes → write a migration/upgrade guide, wired entirely through
+# the file-based mail model.
+#
+#   cp examples/changelog-release-notes.yaml my-release.yaml
+#   agentainer up   -c my-release.yaml
+#   agentainer send -c my-release.yaml --to commit_miner "Draft release notes for v1.4.0 (commits since v1.3.0)."
+#   agentainer down -c my-release.yaml
+#
+# Shape: a star with the commit_miner at the center. The human only ever talks
+# to the miner. The miner reads `git log`, distills the raw commit stream into a
+# clean set of changes, then fans the same digest out to two specialists: the
+# grouping_editor turns changes into categorized, user-facing release notes, and
+# the migration_guide_writer turns the breaking changes into an upgrade guide.
+# The two leaves never talk to each other -- everything routes through the miner
+# so the notes and the guide stay consistent with one source of truth.
+#
+#          ┌──────────────┐
+#   user ─▶│ commit_miner │◀── digests git log, returns notes + guide to user
+#          └──────┬───────┘
+#          ┌──────┴────────────┐
+#          ▼                   ▼
+#   grouping_editor    migration_guide_writer
+#   (release notes)    (upgrade / migration guide)
+#
+# All three agents SHARE one workdir (the repo being released) so they read the
+# same checkout and `git log`. Agentainer auto-namespaces their mailbox folders
+# (commit_miner-inbox/, grouping_editor-inbox/, …) so mail never collides --
+# see docs/use-cases/custom-workspace.md.
+#
+# Key-free: every `command` is the real CLI, but you can swap each for a mock
+# bash loop to route mail with NO API keys -- the mechanics are identical.
+# =============================================================================
+
+swarm:
+  name: changelog-release-notes
+  root: ./changelog-release-notes-workspace
+
+defaults:
+  capture: none              # mock agents don't fire a turn-completion hook
+                             # (auto-upgraded to hook for claude/codex at up)
+  can_talk_to: []           # tightened per agent below
+
+agents:
+  - name: commit_miner
+    type: claude
+    can_talk_to: [grouping_editor, migration_guide_writer, user]
+    command: "claude --dangerously-skip-permissions"
+    workdir: "{root}/repo"          # the repo being released; all three share it
+    create_workdir: true           # flip to false once you point this at your real checkout
+    capture: none
+    role: |
+      You are the COMMIT_MINER -- the hub and the human-facing owner of the
+      release. You turn a raw git history into a clean, deduplicated digest of
+      what actually changed, then delegate the writing.
+      Your team:
+        - grouping_editor        -- turns your digest into categorized,
+                                    user-facing release notes. Talks only to you.
+        - migration_guide_writer -- turns the breaking changes into an
+                                    upgrade/migration guide. Talks only to you.
+      Run it like this:
+        (1) When the human hands you a range (e.g. "since v1.3.0") in your
+            inbox/, run `git log`/`git diff` in the shared repo, and distill the
+            commits into a DIGEST.md: one line per real change, deduped, with the
+            commit hash, whether it is user-facing, and whether it is BREAKING.
+            Drop noise (merge commits, "wip", "fix typo", formatting).
+        (2) Send the digest to the grouping_editor (outbox/grouping_editor/) so
+            it can write the release notes.
+        (3) Send just the BREAKING changes to the migration_guide_writer
+            (outbox/migration_guide_writer/) so it can write the upgrade guide.
+        (4) When both return their drafts, sanity-check them against the digest
+            for consistency, assemble CHANGELOG.md + MIGRATION.md, and send the
+            final result to the user (outbox/user/).
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first) and finish your turn. You may message the
+      agents in your can_talk_to (grouping_editor, migration_guide_writer, user).
+
+  - name: grouping_editor
+    type: claude
+    can_talk_to: [commit_miner]
+    command: "claude --dangerously-skip-permissions"
+    workdir: "{root}/repo"
+    create_workdir: true
+    capture: none
+    role: |
+      You are the GROUPING_EDITOR. Given the miner's DIGEST.md, write the
+      user-facing release notes in CHANGELOG.md. Group changes under clear
+      headings -- Added, Changed, Fixed, Deprecated, Removed, Security -- in the
+      style of "Keep a Changelog". Rewrite each terse commit line into a
+      benefit-oriented sentence a user understands ("what changed and why it
+      matters"), not the developer's internal wording. Omit anything not
+      user-facing. Never invent changes that are not in the digest; if a line is
+      unclear, ask the commit_miner (outbox/commit_miner/). When the notes are
+      ready, write a summary into outbox/commit_miner/ and finish your turn.
+
+  - name: migration_guide_writer
+    type: codex
+    can_talk_to: [commit_miner]
+    command: "codex --yolo"
+    workdir: "{root}/repo"
+    create_workdir: true
+    capture: none
+    role: |
+      You are the MIGRATION_GUIDE_WRITER. Given the BREAKING changes the miner
+      sends you, write MIGRATION.md -- a step-by-step upgrade guide for users
+      moving to this release. For each breaking change explain: what broke, why,
+      the exact before/after (old API/config/flag → new), and the migration
+      step. Order them so a user can follow top to bottom. If nothing is
+      breaking, say so plainly. Do not restate non-breaking features -- that is
+      the grouping_editor's job. If a breaking change is ambiguous, ask the
+      commit_miner (outbox/commit_miner/). When the guide is ready, write a
+      summary into outbox/commit_miner/ and finish your turn.

@@ -1,0 +1,123 @@
+# =============================================================================
+# 🛡️ PR review gate -- several SPECIALIST reviewers run in PARALLEL, then a
+# SYNTHESIZER merges their verdicts into ONE prioritized review.
+#
+#   cp examples/pr-review-gate.yaml my-pr-gate.yaml
+#   agentainer up   -c my-pr-gate.yaml
+#   agentainer send -c my-pr-gate.yaml --to triage "Review PR #123: <diff or repo+branch>"
+#   agentainer down -c my-pr-gate.yaml
+#
+# This is DISTINCT from examples/code-review.yaml: that one is a SINGLE reviewer
+# hub checking several developers' slices. Here THREE specialist reviewers
+# (security, performance, style) audit the SAME diff simultaneously, and a
+# separate synthesizer unifies their critiques so you get one reconciled verdict
+# instead of three unrelated reports.
+#
+#   user
+#     │  "Review PR #123: <diff>"
+#     ▼
+#   triage (hub: fans the PR out, collects the critiques)
+#     ├──▶ security ──┐
+#     ├──▶ performance ┤  (all three run in parallel)
+#     └──▶ style ─────┤
+#                     ▼
+#              triage (gathers all three)
+#                     │  forwards the bundle
+#                     ▼
+#                synthesizer ──▶ user   (one merged, prioritized review)
+#
+# Key-free: commands are the real CLIs (placeholders) — swap for your aliases.
+# No API keys are needed to validate the topology; `agentainer validate` proves
+# the routing without launching anything.
+# =============================================================================
+
+swarm:
+  name: pr-review-gate
+  root: ./pr-review-gate-workspace
+
+defaults:
+  capture: none              # loader auto-upgrades claude/codex to their hook
+  can_talk_to: []           # tightened per agent below
+
+agents:
+  - name: triage
+    type: claude
+    can_talk_to: [security, performance, style, synthesizer, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are TRIAGE, the hub of a parallel PR review gate. You do not write the
+      review yourself; you route the work.
+      When the human (user) drops a PR into your inbox/ — a diff, a repo+branch,
+      or a link — read it. Then FAN IT OUT: send the SAME PR context to each
+      specialist by writing a file into outbox/security/, outbox/performance/ and
+      outbox/style/. Tell each one what to look for (their lane only) and that
+      they must report back to you.
+      WAIT until all three critiques arrive (you'll see them as separate messages
+      in your inbox/). Once you have all three, forward the whole bundle — paste
+      the three critiques verbatim, unchanged — to the synthesizer by writing a
+      file into outbox/synthesizer/. Ask it to merge them into ONE prioritized
+      review and reply to the human.
+      You are the only agent allowed to talk to the user and to the synthesizer;
+      the specialists report only to you. Do not summarize or re-format the
+      specialists' findings yourself — the synthesizer does that.
+      MAILBOX: read a message in inbox/, act on it, then move it to read/. To send,
+      write a file into outbox/<name>/ (read outbox/<name>/about.md first), then
+      finish your turn.
+
+  - name: security
+    type: codex
+    can_talk_to: [triage]
+    command: "codex --yolo"
+    role: |
+      You are the SECURITY reviewer. You audit code for auth/input/secret/data
+      risk defects only — out of your lane, note it and move on. For each finding:
+      cite file:line, the precise risk, and the smallest safe fix. Be concrete; a
+      "looks risky" without a file:line is useless. Do NOT edit the PR. Report your
+      critique back to triage by writing a file into outbox/triage/, then finish
+      your turn.
+      MAILBOX: read the PR in your inbox/, then write your findings into
+      outbox/triage/ and move the incoming message to read/ when done.
+
+  - name: performance
+    type: codex
+    can_talk_to: [triage]
+    command: "codex --yolo"
+    role: |
+      You are the PERFORMANCE reviewer. You audit for N+1 queries, needless
+      allocations, hot-path complexity, and perf regressions only. For each
+      finding: cite file:line, the cost (why it bites at scale), and the smallest
+      fix. Be concrete; "could be slow" without a file:line is useless. Do NOT edit
+      the PR. Report your critique back to triage by writing a file into
+      outbox/triage/, then finish your turn.
+      MAILBOX: read the PR in your inbox/, then write your findings into
+      outbox/triage/ and move the incoming message to read/ when done.
+
+  - name: style
+    type: claude
+    can_talk_to: [triage]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the STYLE reviewer. You audit for readability, naming, convention
+      violations, and missing/weak tests only. For each finding: cite file:line,
+      the concrete issue, and the smallest fix. Skip anything that's a security or
+      perf matter — that's another reviewer's lane. Do NOT edit the PR. Report your
+      critique back to triage by writing a file into outbox/triage/, then finish
+      your turn.
+      MAILBOX: read the PR in your inbox/, then write your findings into
+      outbox/triage/ and move the incoming message to read/ when done.
+
+  - name: synthesizer
+    type: claude
+    can_talk_to: [triage, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the SYNTHESIZER. triage forwards you THREE specialist critiques
+      (security, performance, style) about the same PR. Merge them into ONE
+      prioritized review the human can act on: dedupe overlapping issues, rank by
+      severity (blocker > major > minor > nit), and for every item say which
+      specialist flagged it. Lead with a one-line verdict (ship / ship-with-fixes /
+      block) and a short changelog-style summary. Do NOT re-litigate the code
+      yourself; synthesize what the reviewers found. Reply to the human by writing
+      a file into outbox/user/, then finish your turn.
+      MAILBOX: read the bundle in your inbox/, write the merged review into
+      outbox/user/, and move the incoming message to read/ when done.

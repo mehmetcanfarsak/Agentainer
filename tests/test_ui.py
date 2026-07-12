@@ -16,6 +16,7 @@ from unittest import mock
 
 import pytest
 
+import log
 import ui
 from support import load_swarm, mock_tmux
 
@@ -712,6 +713,44 @@ def test_api_down_missing_and_unknown_and_badjson(cfg):
             assert e.code == 400
 
 
+def test_api_up_all_success(cfg):
+    with mock_tmux(), mock.patch.object(ui.reconcile, "start_all", return_value=["alice"]):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/up_all", "sekret", {})
+            assert code == 200
+            j = json.loads(body)
+            assert j["ok"] is True and j["started"] == ["alice"]
+
+
+def test_api_up_all_error(cfg):
+    def boom(*a, **k):
+        raise RuntimeError("launch failed")
+    with mock_tmux(), mock.patch.object(ui.reconcile, "start_all", boom):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/up_all", "sekret", {})
+            assert code == 400
+            assert "launch failed" in json.loads(body)["error"]
+
+
+def test_api_down_all_success(cfg):
+    with mock_tmux(), mock.patch.object(ui.reconcile, "stop_all", return_value=["alice", "bob"]):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/down_all", "sekret", {})
+            assert code == 200
+            j = json.loads(body)
+            assert j["ok"] is True and j["stopped"] == ["alice", "bob"]
+
+
+def test_api_down_all_error(cfg):
+    def boom(*a, **k):
+        raise RuntimeError("kill failed")
+    with mock_tmux(), mock.patch.object(ui.reconcile, "stop_all", boom):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/down_all", "sekret", {})
+            assert code == 400
+            assert "kill failed" in json.loads(body)["error"]
+
+
 # --------------------------------------------------------------------------
 # config / availability (POST -> persist to YAML)
 # --------------------------------------------------------------------------
@@ -822,11 +861,26 @@ def test_api_agent_remove(cfg, tmp_path):
 
 
 def test_api_agent_remove_dangling(cfg):
-    # alice <-> bob reference each other; removing bob dangles alice's ACL -> 400.
+    # A peer references the removed agent; removal must SUCCEED and strip the
+    # now-dangling ACL reference rather than corrupting the config.
+    import config as cfgmod
     with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
         code, body = _post(h, "/api/agent/remove", "sekret", {"name": "bob"})
+        assert code == 200 and json.loads(body)["name"] == "bob"
+        reloaded = cfgmod.load(cfg.path)
+        assert "bob" not in reloaded.names()
+        # no remaining agent still references bob
+        for a in reloaded.agents:
+            assert "bob" not in a.can_talk_to
+
+
+def test_api_agent_remove_error_is_400(cfg):
+    # A genuine failure inside remove_agent is surfaced as 400, not a 500/crash.
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        with mock.patch.object(ui.reconcile, "remove_agent", side_effect=RuntimeError("boom")):
+            code, body = _post(h, "/api/agent/remove", "sekret", {"name": "bob"})
         assert code == 400
-        assert "error" in json.loads(body)
+        assert "boom" in json.loads(body)["error"]
 
 
 def _post_raw(h, path, token, raw_bytes):
@@ -997,3 +1051,249 @@ def test_ui_inserts_lib_path_when_missing():
             sys.modules["ui"] = original
         else:
             sys.modules.pop("ui", None)
+
+
+# --------------------------------------------------------------------------
+# truthful status: the `state` vocabulary (working / waiting / attention /
+# stalled / stopped) + the top-level `attention` count
+# --------------------------------------------------------------------------
+
+
+def _stamp_user_mail(cfg, sender, body="hi"):
+    """Drop a stamped message from *sender* into the virtual `user` queue."""
+    udir = cfg.queue_dir / "user"
+    udir.mkdir(parents=True, exist_ok=True)
+    text = ui.mail.stamp_message(body, sender, "user", f"m-{sender}")
+    (udir / f"m-{sender}.txt").write_text(text)
+
+
+def test_agent_state_working_waiting_stalled_attention(tmp_path):
+    cfg = load_swarm(tmp_path, AGENTS, name="demo", busy_timeout_ms=600000)
+    # alice: mid-turn (delivered>completed, recent) -> working
+    ui.turn.write_turn_state(
+        cfg, "alice", {"delivered": 1, "completed": 0, "since": time.time() - 5, "by": "bob"}
+    )
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        data = json.loads(_get(h, "/api/status", token="sekret")[1])
+        alice = next(a for a in data["agents"] if a["name"] == "alice")
+        bob = next(a for a in data["agents"] if a["name"] == "bob")
+        assert alice["state"] == "working"
+        assert alice["working_s"] >= 1
+        assert bob["state"] == "waiting"  # no turn, no user mail
+
+        # bob now looks busy but is long overdue -> stalled (busy_info fails open)
+        ui.turn.write_turn_state(
+            cfg, "bob", {"delivered": 1, "completed": 0, "since": 1.0, "by": "alice"}
+        )
+        data = json.loads(_get(h, "/api/status", token="sekret")[1])
+        bob = next(a for a in data["agents"] if a["name"] == "bob")
+        assert bob["state"] == "stalled"
+
+        # alice finishes her turn and has mail waiting on the user -> attention
+        ui.turn.write_turn_state(
+            cfg, "alice", {"delivered": 1, "completed": 1, "since": 0, "by": "bob"}
+        )
+        _stamp_user_mail(cfg, "alice")
+        data = json.loads(_get(h, "/api/status", token="sekret")[1])
+        alice = next(a for a in data["agents"] if a["name"] == "alice")
+        assert alice["state"] == "attention"
+        assert alice["awaiting_user"] is True
+        assert data["attention"] == 1
+
+
+def test_agent_state_stopped(cfg):
+    with mock_tmux(has_session=False), ui.run_server(
+        cfg, "sekret", host="127.0.0.1", port=0
+    ) as h:
+        data = json.loads(_get(h, "/api/status", token="sekret")[1])
+        assert all(a["state"] == "stopped" for a in data["agents"])
+        # /api/agent carries the same fields
+        d = json.loads(_get(h, "/api/agent?agent=alice", token="sekret")[1])["agent"]
+        assert d["state"] == "stopped" and d["awaiting_user"] is False
+
+
+# --------------------------------------------------------------------------
+# templates (bundled example swarms) -- onboarding
+# --------------------------------------------------------------------------
+
+
+GOOD_TMPL = """# A tiny demo team
+swarm:
+  name: Demo Team
+defaults: {type: claude}
+agents:
+  - name: writer
+    command: "echo hi"
+    can_talk_to: [user]
+  - name: editor
+    command: "echo hi"
+    can_talk_to: [writer]
+"""
+
+# No leading comment (first line is content) -> summary "" and title from stem.
+NOCOMMENT_TMPL = """swarm:
+  session_prefix: "x-"
+agents:
+  - name: solo
+    command: "echo hi"
+    can_talk_to: []
+"""
+
+
+# Leading decorative banner + blank comment -> summary is the first real blurb.
+BANNER_TMPL = """# ============================================================
+#
+# The real one-line blurb.
+swarm:
+  name: Banner Team
+agents:
+  - name: solo
+    command: "echo hi"
+    can_talk_to: []
+"""
+
+
+def _tmpl_dir(tmp_path):
+    d = tmp_path / "examples"
+    d.mkdir()
+    (d / "demo.yaml").write_text(GOOD_TMPL)
+    (d / "solo-run.yaml").write_text(NOCOMMENT_TMPL)
+    (d / "banner.yaml").write_text(BANNER_TMPL)
+    # A directory named *.yaml makes load_raw's read_text raise -> skipped.
+    (d / "broken.yaml").mkdir()
+    return d
+
+
+def test_api_templates_lists(cfg, tmp_path):
+    tdir = _tmpl_dir(tmp_path)
+    with mock_tmux(), mock.patch.object(ui.UIHandler, "_templates_dir", lambda self: tdir):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            data = json.loads(_get(h, "/api/templates", token="sekret")[1])
+    by = {t["name"]: t for t in data["templates"]}
+    assert by["demo"]["title"] == "Demo Team"
+    assert by["demo"]["summary"] == "A tiny demo team"
+    assert by["demo"]["agents"] == 2
+    # no comment -> "" summary; no swarm.name -> title from the stem
+    assert by["solo-run"]["summary"] == ""
+    assert by["solo-run"]["title"] == "Solo Run"
+    # decorative banner + blank comment are skipped -> first real blurb wins
+    assert by["banner"]["summary"] == "The real one-line blurb."
+    assert "broken" not in by  # unparseable entry skipped
+
+
+def test_api_templates_real_examples_dir(cfg):
+    # Unpatched: exercises the real _templates_dir() against the shipped
+    # examples/ folder, so the endpoint returns the bundled swarms.
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        data = json.loads(_get(h, "/api/templates", token="sekret")[1])
+    names = {t["name"] for t in data["templates"]}
+    assert names  # the repo ships several example swarms
+    assert all({"name", "title", "summary", "agents"} <= set(t) for t in data["templates"])
+
+
+def test_api_templates_missing_dir(cfg, tmp_path):
+    gone = tmp_path / "nope"
+    with mock_tmux(), mock.patch.object(ui.UIHandler, "_templates_dir", lambda self: gone):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            data = json.loads(_get(h, "/api/templates", token="sekret")[1])
+    assert data["templates"] == []
+
+
+def test_api_templates_apply_success(tmp_path):
+    empty = load_swarm(tmp_path, "", name="fresh")  # zero agents
+    assert empty.names() == []
+    tdir = _tmpl_dir(tmp_path)
+    with mock_tmux(), mock.patch.object(ui.UIHandler, "_templates_dir", lambda self: tdir):
+        with ui.run_server(empty, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/templates/apply", "sekret", {"name": "demo"})
+            assert code == 200
+            j = json.loads(body)
+            assert j["ok"] is True and j["applied"] == "demo"
+            assert j["added"] == ["writer", "editor"]
+            # the reloaded swarm now serves the seeded agents
+            data = json.loads(_get(h, "/api/status", token="sekret")[1])
+            assert {a["name"] for a in data["agents"]} == {"writer", "editor"}
+    # persisted to disk
+    import config as cfgmod
+    assert set(cfgmod.load(empty.path).names()) == {"writer", "editor"}
+
+
+def test_api_templates_apply_refuses_nonempty(cfg, tmp_path):
+    tdir = _tmpl_dir(tmp_path)
+    with mock_tmux(), mock.patch.object(ui.UIHandler, "_templates_dir", lambda self: tdir):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            code, body = _post(h, "/api/templates/apply", "sekret", {"name": "demo"})
+    assert code == 400
+    assert "already has agents" in json.loads(body)["error"]
+
+
+def test_api_templates_apply_unknown_and_missing(tmp_path):
+    empty = load_swarm(tmp_path, "", name="fresh")
+    tdir = _tmpl_dir(tmp_path)
+    with mock_tmux(), mock.patch.object(ui.UIHandler, "_templates_dir", lambda self: tdir):
+        with ui.run_server(empty, "sekret", host="127.0.0.1", port=0) as h:
+            assert _post(h, "/api/templates/apply", "sekret", {})[0] == 400  # no name
+            code, body = _post(h, "/api/templates/apply", "sekret", {"name": "ghost"})
+            assert code == 404
+            # a *.yaml that is actually a directory -> load_raw raises -> 400
+            code2, body2 = _post(h, "/api/templates/apply", "sekret", {"name": "broken"})
+            assert code2 == 400
+            url = f"http://127.0.0.1:{h.port}/api/templates/apply?token=sekret"
+            req = urllib.request.Request(url, data=b"nope", method="POST",
+                                         headers={"Content-Type": "application/json"})
+            try:
+                urllib.request.urlopen(req)
+                assert False
+            except urllib.error.HTTPError as e:
+                assert e.code == 400
+
+
+def test_api_templates_apply_unknown_when_dir_missing(tmp_path):
+    empty = load_swarm(tmp_path, "", name="fresh")
+    gone = tmp_path / "nope"
+    with mock_tmux(), mock.patch.object(ui.UIHandler, "_templates_dir", lambda self: gone):
+        with ui.run_server(empty, "sekret", host="127.0.0.1", port=0) as h:
+            code, _ = _post(h, "/api/templates/apply", "sekret", {"name": "demo"})
+    assert code == 404  # no listing -> nothing is a valid template
+
+
+# --------------------------------------------------------------------------
+# rate (opt-in per-agent throughput)
+# --------------------------------------------------------------------------
+
+
+def test_api_rate_counts_recent_messages(cfg):
+    log.log_event(cfg, "alice", "delivered", id="m1")
+    log.log_event(cfg, "alice", "user-send", from_="user", id="m2")
+    log.log_event(cfg, "bob", "delivered", id="m3")
+    log.log_event(cfg, "bob", "route", id="m4")  # not a message kind -> ignored
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        data = json.loads(_get(h, "/api/rate?window=5", token="sekret")[1])
+    assert data["window_min"] == 5
+    assert data["total"] == 3
+    assert data["rates"]["alice"] == round(2 / 5, 2)
+    assert data["rates"]["bob"] == round(1 / 5, 2)
+
+
+def test_api_rate_window_defaults_and_guards(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        # bad + non-positive window both fall back to 5; empty log -> zero total
+        assert json.loads(_get(h, "/api/rate?window=abc", token="sekret")[1])["window_min"] == 5
+        assert json.loads(_get(h, "/api/rate?window=0", token="sekret")[1])["window_min"] == 5
+        assert json.loads(_get(h, "/api/rate", token="sekret")[1])["total"] == 0
+
+
+def test_api_rate_skips_old_and_malformed(cfg):
+    # A malformed JSONL line and a record missing/!bad ts are both skipped.
+    logf = cfg.log_dir / "agentainer.jsonl"
+    logf.parent.mkdir(parents=True, exist_ok=True)
+    logf.write_text(
+        "\n"        # blank line -> skipped
+        "not json\n"
+        + json.dumps({"kind": "delivered", "agent": "alice"}) + "\n"        # no ts
+        + json.dumps({"kind": "delivered", "agent": "alice", "ts": "nope"}) + "\n"  # bad ts
+        + json.dumps({"kind": "delivered", "agent": "alice", "ts": "2000-01-01T00:00:00+00:00"}) + "\n"  # old
+    )
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        data = json.loads(_get(h, "/api/rate?window=5", token="sekret")[1])
+    assert data["total"] == 0

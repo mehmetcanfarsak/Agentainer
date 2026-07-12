@@ -273,6 +273,21 @@ def test_can_talk_to_wildcard_expands(tmp_path):
     assert set(a.can_talk_to) == {"B", "C"}
 
 
+def test_can_talk_to_wildcard_preserves_explicit_user(tmp_path):
+    # `*` covers agents only; an explicitly-listed `user` alongside it must
+    # survive expansion, or the agent is denied mail the config plainly granted.
+    cfg = load_config(
+        "swarm: {root: ./ws}\n"
+        "defaults: {type: claude}\n"
+        "agents:\n"
+        "  - {name: A, command: 'true', can_talk_to: ['*', user]}\n"
+        "  - {name: B, command: 'true'}\n",
+        tmp_path,
+    )
+    a = cfg.get("A")
+    assert set(a.can_talk_to) == {"B", "user"}
+
+
 def test_can_talk_to_user_allowed(tmp_path):
     cfg = load_config(
         "swarm: {root: ./ws}\n"
@@ -443,6 +458,27 @@ def test_mail_paths_shared_workspace_namespaced(tmp_path):
     assert paths.failed == a.mail_dir / "A-failed"
 
 
+def test_mail_paths_shared_mail_dir_distinct_workdirs_namespaced(tmp_path):
+    # A shared `mail_dir` with DISTINCT workdirs must still namespace the mailbox
+    # folders. Namespacing keys off where the folders live (mail_dir), not the
+    # workdir; without that these two agents would silently share one `inbox/`.
+    cfg = load_config(
+        "swarm: {root: ./ws}\n"
+        "defaults: {type: claude, mail_dir: ./mail}\n"
+        "agents:\n"
+        "  - {name: A, command: 'true'}\n"
+        "  - {name: B, command: 'true'}\n",
+        tmp_path,
+    )
+    a, b = cfg.get("A"), cfg.get("B")
+    assert a.workdir != b.workdir          # distinct workdirs (root/A vs root/B)
+    assert a.mail_dir == b.mail_dir        # but one shared mail_dir
+    a_paths, b_paths = cfg.mail_paths(a), cfg.mail_paths(b)
+    assert a_paths.inbox == a.mail_dir / "A-inbox"
+    assert b_paths.inbox == b.mail_dir / "B-inbox"
+    assert a_paths.inbox != b_paths.inbox  # the collision that used to happen
+
+
 def test_swarmconfig_properties(tmp_path):
     cfg = load_config(
         "swarm: {root: ./ws}\n"
@@ -563,9 +599,15 @@ def test_agent_types_not_mapping(tmp_path):
         load_config("agent_types: {t: 'notmap'}\nagents: []\n", tmp_path)
 
 
-def test_no_agents_raises(tmp_path):
-    with pytest.raises(ConfigError):
-        load_config("swarm: {root: ./ws}\nagents: []\n", tmp_path)
+def test_no_agents_allowed(tmp_path):
+    # An empty swarm is valid (onboarding: `up` brings up just the orchestrator +
+    # UI, then agents are seeded from a template / the editor). Both an empty list
+    # and an absent `agents:` key load to zero agents.
+    cfg = load_config("swarm: {root: ./ws}\nagents: []\n", tmp_path)
+    assert cfg.agents == []
+    assert cfg.names() == []
+    cfg2 = load_config("swarm: {root: ./ws}\n", tmp_path)
+    assert cfg2.agents == []
 
 
 def test_agents_not_list(tmp_path):

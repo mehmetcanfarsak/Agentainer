@@ -157,6 +157,29 @@ def write_raw(path, data: dict) -> None:
 # --------------------------------------------------------------------------
 
 
+def _commit(cfg, raw: dict) -> "cfgmod.SwarmConfig":
+    """Persist *raw* to the config path, then validate by reloading it.
+
+    If the reload fails -- the edit produced an invalid config (e.g. a
+    can_talk_to reference to an agent that no longer exists) -- restore the
+    previous file and re-raise, so a REJECTED edit never leaves an unloadable
+    config on disk. Without this, every mutator wrote first and validated
+    second, and a rejected edit corrupted agentainer.yaml, breaking every later
+    command and the UI.
+    """
+    path = Path(cfg.path)
+    prev = path.read_text() if path.exists() else None
+    write_raw(path, raw)
+    try:
+        return cfgmod.load(path)
+    except Exception:
+        if prev is None:  # pragma: no cover - a mutator always starts from an existing config
+            path.unlink(missing_ok=True)
+        else:
+            path.write_text(prev)
+        raise
+
+
 def _coerce_field(key: str, value: str):
     """Turn a CLI string into the right Python value for *key*.
 
@@ -202,8 +225,7 @@ def add_agent(cfg, name, type_, command, can_talk_to, role="", workdir=None, **e
         entry[k] = v
     agents.append(entry)
     raw["agents"] = agents
-    write_raw(cfg.path, raw)
-    return cfgmod.load(cfg.path)
+    return _commit(cfg, raw)
 
 
 def remove_agent(cfg, name) -> "cfgmod.SwarmConfig":
@@ -217,9 +239,18 @@ def remove_agent(cfg, name) -> "cfgmod.SwarmConfig":
     kept = [a for a in agents if str(a.get("name")) != name]
     if len(kept) == len(agents):
         raise ValueError(f"agent {name!r} not found")
+    # Strip the removed agent from every remaining agent's can_talk_to. Config
+    # load validates that every peer exists (config.py), so a lingering
+    # reference would make the reload below raise -- after we've already written
+    # the file -- leaving an unloadable config on disk that breaks every later
+    # command and the UI. A "*" wildcard needs no cleanup: load re-expands it to
+    # whatever agents remain.
+    for a in kept:
+        talk = a.get("can_talk_to")
+        if isinstance(talk, list):
+            a["can_talk_to"] = [p for p in talk if str(p) != name]
     raw["agents"] = kept
-    write_raw(cfg.path, raw)
-    return cfgmod.load(cfg.path)
+    return _commit(cfg, raw)
 
 
 def edit_swarm(cfg, **fields) -> "cfgmod.SwarmConfig":
@@ -234,8 +265,7 @@ def edit_swarm(cfg, **fields) -> "cfgmod.SwarmConfig":
     for k, v in fields.items():
         swarm[k] = v
     raw["swarm"] = swarm
-    write_raw(cfg.path, raw)
-    return cfgmod.load(cfg.path)
+    return _commit(cfg, raw)
 
 
 def edit_telegram(cfg, **fields) -> "cfgmod.SwarmConfig":
@@ -249,8 +279,26 @@ def edit_telegram(cfg, **fields) -> "cfgmod.SwarmConfig":
     for k, v in fields.items():
         tg[k] = v
     raw["telegram"] = tg
+    return _commit(cfg, raw)
+
+
+def apply_template(cfg, agents, defaults=None) -> list:
+    """Seed an EMPTY config on disk with a template's ``agents`` (+ ``defaults``).
+
+    Onboarding helper: copies an example swarm's agent list into the current
+    ``agentainer.yaml`` when it has no agents yet, and pulls in the template's
+    ``defaults`` block if the target has none. Returns the added agent names.
+    Raises ``ValueError`` if the config already has agents (templates seed a
+    fresh swarm rather than merging into a live one).
+    """
+    raw = load_raw(cfg.path)
+    if raw.get("agents"):
+        raise ValueError("swarm already has agents")
+    if defaults and not raw.get("defaults"):
+        raw["defaults"] = dict(defaults)
+    raw["agents"] = list(agents)
     write_raw(cfg.path, raw)
-    return cfgmod.load(cfg.path)
+    return [str(a.get("name")) for a in agents if a.get("name")]
 
 
 def edit_agent(cfg, name, **fields) -> "cfgmod.SwarmConfig":
@@ -270,8 +318,7 @@ def edit_agent(cfg, name, **fields) -> "cfgmod.SwarmConfig":
             break
     if not found:
         raise ValueError(f"agent {name!r} not found")
-    write_raw(cfg.path, raw)
-    return cfgmod.load(cfg.path)
+    return _commit(cfg, raw)
 
 
 # --------------------------------------------------------------------------
@@ -370,7 +417,7 @@ def start_one(cfg, name: str, *, _start_fn=None) -> bool:
     """Bring a single configured agent up if its tmux session isn't running.
 
     Returns True if the agent was (re)launched, False if it was already running.
-    Raises KeyError via ``cfg.get`` for an unknown name.
+    Raises ConfigError via ``cfg.get`` for an unknown name.
     """
     agent = cfg.get(name)
     if tmux.session_exists(agent.session):
@@ -397,6 +444,30 @@ def stop_one(cfg, name: str) -> bool:
     tmux.tmux("kill-session", "-t", f"={agent.session}", check=False, capture=True)
     info(f"stop_one: stopped {name}")
     return True
+
+
+def start_all(cfg, *, _start_fn=None) -> list:
+    """Start every configured-but-not-running agent; return the started names.
+
+    A thin wrapper over ``reconcile`` (start-only) so the UI's "Start all" button
+    has one authoritative launch path. ``_start_fn`` is injectable for tests.
+    """
+    return reconcile(cfg, start_missing=True, stop_extra=False, _start_fn=_start_fn)["started"]
+
+
+def stop_all(cfg) -> list:
+    """Kill every running agent session (config untouched); return stopped names.
+
+    Mirrors ``stop_one`` across the whole swarm for the UI's "Stop all" button;
+    agents that are already down are skipped.
+    """
+    stopped: list[str] = []
+    for a in cfg.agents:
+        if tmux.session_exists(a.session):
+            tmux.tmux("kill-session", "-t", f"={a.session}", check=False, capture=True)
+            stopped.append(a.name)
+            info(f"stop_all: stopped {a.name}")
+    return stopped
 
 
 # --------------------------------------------------------------------------

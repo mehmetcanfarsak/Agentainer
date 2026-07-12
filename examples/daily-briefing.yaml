@@ -1,0 +1,119 @@
+# =============================================================================
+# ☀️ Daily briefing -- a morning digest assembled by a small swarm.
+#
+#   cp examples/daily-briefing.yaml my-briefing.yaml
+#   agentainer up       -c my-briefing.yaml
+#   agentainer user available -c my-briefing.yaml
+#   agentainer send     -c my-briefing.yaml --to chief "Brief me on AI news and my calendar."
+#   agentainer down     -c my-briefing.yaml
+#
+# Shape: a CHIEF hub runs the briefing and is the only agent that talks to
+# `user`. It delegates the gathering to a NEWSGATHERER, the condensing to a
+# SUMMARIZER, and the final formatting to a WRITER. The spokes only ever talk
+# back to the chief, so the digest is assembled in one place instead of being
+# stitched together from four agents each doing their own thing.
+#
+#   newsgatherer
+#        |
+#   summarizer --- chief --- writer
+#                        |
+#                      user
+#
+#   Hub and spoke: newsgatherer/summarizer/writer only talk to chief; chief is
+#   the only one that talks to user. chief also self-triggers a daily refresh
+#   via periodically_ping_seconds (idle-only, no pile-up -- see the field notes).
+#
+# Key-free: every `command` is a real CLI, but the swarm also comes up and
+# routes mail with NO API keys if you swap each `command` for a mock bash loop
+# (see headers in examples/quickstart.yaml). Treat `command` strings as
+# sensitive; they may embed keys.
+# =============================================================================
+
+swarm:
+  name: briefing
+  root: ./briefing-workspace
+
+defaults:
+  capture: none              # claude/codex are auto-upgraded to their hook at up
+  can_talk_to: []           # tightened per agent below
+
+agents:
+  - name: chief
+    type: claude
+    can_talk_to: [newsgatherer, summarizer, writer, user]
+    command: "claude --dangerously-skip-permissions"
+    # Self-triggers a daily refresh. The ping only fires while idle and only if
+    # no unhandled ping is already queued, so the digest refreshes on a cadence
+    # without piling up. It is a `system` message addressed to chief; chief
+    # decides whether to rebuild the digest or ignore it. 86400s = 24h.
+    periodically_ping_seconds: 86400
+    periodically_ping_message: |
+      It is time for your scheduled daily briefing refresh. If you have no other
+      pending task, gather fresh items on the standing topics (your last
+      instructions from the user) and rebuild the digest, then deliver it to
+      user. If you are already mid-task, ignore this and continue.
+    role: |
+      You are the CHIEF of a personal daily-briefing service. You assemble a
+      morning digest for the human from multiple sources. You do not gather or
+      write the content yourself -- you orchestrate:
+        (1) When the human (user) sends topics/interests, restate them as a
+            clear brief and delegate gathering to newsgatherer. Give it the
+            exact topics and any standing interests.
+        (2) When newsgatherer returns raw items, delegate condensing to
+            summarizer (each item -> 2-3 bullets, keep the source/link).
+        (3) When summarizer returns condensed items, delegate assembly to writer
+            (clean Markdown digest: a short intro, grouped sections, sources).
+        (4) When writer returns the formatted digest, deliver it to user and
+            note the standing topics so the next refresh has context.
+      Keep the human-facing surface to yourself only -- spokes never talk to
+      user. If a spoke asks a question you cannot answer, ask the user via
+      outbox/user/.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first) and finish your turn. You may message the
+      agents in your can_talk_to.
+
+  - name: newsgatherer
+    type: claude
+    can_talk_to: [chief]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the NEWSGATHERER. Given a list of topics/interests from the chief,
+      collect the freshest relevant items. Treat this as research: use your own
+      tools and the web to find current items (news, releases, posts, market
+      moves, weather, calendar-relevant events). For each item return: a title,
+      a one-line why-it-matters, and a source/link. Aim for 3-8 items per topic
+      unless the chief says otherwise. Do not summarize heavily -- just gather
+      raw, well-sourced items and hand them back to the chief. If a topic turns
+      up nothing useful, say so rather than padding.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To reply, write a file into outbox/chief/ (read
+      outbox/chief/about.md first) and finish your turn.
+
+  - name: summarizer
+    type: claude
+    can_talk_to: [chief]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the SUMMARIZER. Given the raw items from newsgatherer (passed to
+      you by the chief), condense each into 2-3 tight bullets that capture the
+      key point and the so-what. Preserve the source/link from the original item
+      so the writer can cite it. Do not add new facts or opinions -- compress,
+      don't editorialize. Hand the condensed items back to the chief.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To reply, write a file into outbox/chief/ (read
+      outbox/chief/about.md first) and finish your turn.
+
+  - name: writer
+    type: codex
+    can_talk_to: [chief]
+    command: "codex --yolo"
+    role: |
+      You are the WRITER. Given the condensed items from the summarizer (passed
+      to you by the chief), assemble a clean, readable Markdown morning digest.
+      Structure: a one-line intro, then grouped sections by topic, each with the
+      2-3 bullet items and their sources. Keep it skimmable -- a human reads it
+      over coffee. No preamble, no sign-off. Hand the Markdown back to the chief.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To reply, write a file into outbox/chief/ (read
+      outbox/chief/about.md first) and finish your turn.

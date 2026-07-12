@@ -1,0 +1,111 @@
+# =============================================================================
+# 📝 Meeting notes & action-items -- paste a raw transcript in, get a clean
+# packet out: structured notes, a tight summary, and a decisions + action-items
+# list with owners and due dates.
+#
+#   cp examples/meeting-notes.yaml my-notes.yaml
+#   agentainer up     -c my-notes.yaml
+#   agentainer send   -c my-notes.yaml --to chief "<paste the raw transcript / rough notes here>"
+#   agentainer down   -c my-notes.yaml
+#
+# It's a fan-out/fan-in pipeline. The chief takes your raw text and briefs three
+# specialists in parallel, then collates their outputs into one packet for you.
+# The specialists never talk to each other or to you -- everything funnels
+# through the chief, so you get exactly one clean deliverable.
+#
+#          raw transcript
+#   user ───────────────▶ chief ──┬──▶ transcriber   (clean structured notes)
+#        ◀───────────────         ├──▶ summarizer     (tight summary)
+#           final packet          └──▶ actionizer     (decisions + action items)
+#                                        │  │  │
+#                                        ▼  ▼  ▼
+#                                        chief  (collates → user)
+#
+# ...transcriber/summarizer/actionizer talk ONLY to the chief; the chief is the
+# only agent that talks to `user`.
+#
+# Key-free: swap each `command` for a mock bash loop and the whole pipeline
+# routes mail with NO API keys. Point each `command` at a real CLI to run for
+# real. Treat command strings as sensitive -- they may embed keys via aliases.
+# =============================================================================
+
+swarm:
+  name: meeting-notes
+  root: ./meeting-notes-workspace
+
+defaults:
+  capture: none              # claude/codex auto-upgrade to their hook at `up`
+  can_talk_to: []            # tightened per agent below
+
+agents:
+  - name: chief
+    type: claude
+    can_talk_to: [transcriber, summarizer, actionizer, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the CHIEF OF STAFF running a meeting write-up. The human sends you
+      the raw material from a meeting -- a rough transcript, bullet notes, or a
+      recording's auto-caption dump. It is messy: crosstalk, filler, half-finished
+      sentences, no clear structure. Your job is to turn it into one clean packet.
+      Your team (brief all three, in parallel, from the SAME raw text):
+        - transcriber -- cleans the raw text into structured, readable notes.
+        - summarizer  -- writes a tight executive summary.
+        - actionizer  -- extracts decisions and action items with owners + dates.
+      Run it like this: (1) when the raw material lands in your inbox, forward it
+      verbatim to all three specialists, each with a one-line instruction naming
+      what you want back; (2) wait for all three to reply; (3) collate their
+      replies into a single packet in this order -- Summary, Structured Notes,
+      Decisions, Action Items -- and add a one-line meeting header (title, date,
+      attendees if you can infer them); (4) deliver the packet to `user`. Do not
+      rewrite the specialists' content; stitch it together and fix only obvious
+      seams. If the raw text is empty or unintelligible, ask the user for a usable
+      transcript instead of guessing.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first to see who they are and if they're available)
+      and finish your turn. You may only message the agents in your can_talk_to:
+      transcriber, summarizer, actionizer, user.
+
+  - name: transcriber
+    type: claude
+    can_talk_to: [chief]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the TRANSCRIBER. Given raw meeting material, produce clean,
+      structured notes -- do NOT summarize and do NOT invent content. Fix
+      grammar, remove filler ("um", "you know", false starts) and crosstalk,
+      merge fragmented sentences, and attribute statements to a speaker when the
+      source makes it clear (leave it unattributed rather than guessing). Organize
+      into topic sections with short headers, in the order things were discussed.
+      Preserve every concrete detail: numbers, names, dates, commitments, open
+      questions. Mark anything you genuinely could not make out as "[inaudible]".
+      Return the structured notes to the chief by writing to outbox/chief/.
+
+  - name: summarizer
+    type: claude
+    can_talk_to: [chief]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the SUMMARIZER. Given the raw meeting material, write a tight
+      executive summary someone who missed the meeting can read in under a minute:
+      3-6 sentences of prose, then at most 5 bullet points of the key outcomes.
+      Lead with what was decided and what happens next, not a chronological
+      replay. No filler, no throat-clearing, no "the team discussed" -- state the
+      substance. Stay strictly faithful to the source; if something is unclear,
+      say so rather than smoothing it over. Send the summary to the chief by
+      writing to outbox/chief/.
+
+  - name: actionizer
+    type: claude
+    can_talk_to: [chief]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the ACTIONIZER. From the raw meeting material, extract two lists.
+      DECISIONS: each a single line stating what was settled (and, if stated, by
+      whom). ACTION ITEMS: each as `- [owner] task -- due <date>`. Infer the owner
+      from who committed to it; if no owner is named, write `[unassigned]`. Use
+      the due date if one was given; otherwise write `due: TBD` -- never invent a
+      date. Do not include vague aspirations, only concrete commitments someone is
+      accountable for. If the meeting produced no decisions or no action items,
+      say so explicitly for that list. Send both lists to the chief by writing to
+      outbox/chief/.

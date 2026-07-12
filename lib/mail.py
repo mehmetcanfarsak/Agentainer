@@ -29,6 +29,7 @@ Branding: "swarm" is retired -- it's Agentainer everywhere (decision D21).
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import time
@@ -148,11 +149,23 @@ def enqueue(cfg: SwarmConfig, recipient: str, text: str, msg_id: str) -> None:
     After the message is durably queued, best-effort mirror it to Telegram (a
     no-op unless configured). Mirroring runs AFTER the write and can never raise
     -- correctness never depends on the network (see lib/telegram.py).
+
+    We stamp the queue file with a strictly-increasing modification time (>= every
+    file already queued for this recipient) so :func:`queued_files` gives true
+    FIFO. Filesystem mtime granularity can't be relied on: some filesystems hand
+    identical mtimes to writes made in the same coarse tick, which would let
+    release order fall back to the random message-id name and starve a message
+    whose id happens to sort late. Enqueues for one recipient are serialised by
+    this same lock, so max-existing+1 is a safe monotonic clock per queue.
     """
     with lock.file_lock(cfg, recipient, "mail"):
         q = cfg.queue_dir / recipient
         q.mkdir(parents=True, exist_ok=True)
-        (q / f"{msg_id}.txt").write_text(text)
+        path = q / f"{msg_id}.txt"
+        path.write_text(text)
+        prior = [f.stat().st_mtime_ns for f in q.iterdir() if f.is_file() and f != path]
+        stamp = max([time.time_ns()] + [p + 1 for p in prior])
+        os.utime(path, ns=(stamp, stamp))
     import telegram  # lazy: keeps mail's import graph free of the bridge
 
     telegram.on_enqueued(cfg, recipient, text, msg_id)
@@ -299,8 +312,34 @@ def standby_prompt(cfg: SwarmConfig, agent) -> str:
     )
 
 
+def _queue_order(path: Path):
+    """FIFO sort key for a queued message: enqueue time first, name as tie-break.
+
+    Message filenames are random ids (``m-<uuid8>.txt``), so sorting the queue
+    by *name* is a random order -- a message whose id happens to sort late gets
+    starved indefinitely as lower-sorting ids keep cutting in line. Queue files
+    are written once by ``enqueue`` and never modified, so ``st_mtime_ns`` is
+    the moment the message was enqueued: order by that to get true FIFO.
+    """
+    return (path.stat().st_mtime_ns, path.name)
+
+
+def queued_files(cfg: SwarmConfig, agent_name: str) -> list:
+    """Return *agent_name*'s queued message files in FIFO (enqueue-time) order.
+
+    A missing queue dir (agent never received mail) is treated as empty.
+    """
+    q = cfg.queue_dir / agent_name
+    if not q.exists():
+        return []
+    return sorted((f for f in q.iterdir() if f.is_file()), key=_queue_order)
+
+
 def release_next(cfg: SwarmConfig, agent_name: str) -> bool:
     """Release the oldest queued message into *agent_name*'s inbox (one-at-a-time).
+
+    "Oldest" is by enqueue time (see :func:`queued_files`), not filename -- the
+    ids are random, so filename order would starve a late-sorting message.
 
     Returns False if the inbox already holds a message (one-at-a-time) or the
     queue is empty; True if a message was moved into the inbox. Each release
@@ -328,10 +367,7 @@ def release_next(cfg: SwarmConfig, agent_name: str) -> bool:
             # One-at-a-time: a message is already presented; count it as a presentation.
             _bump_presentations(cfg, agent_name, existing[0].name)
             return False
-        q = cfg.queue_dir / agent_name
-        # q may not exist yet for an agent that has never received mail;
-        # iterdir() would raise, so treat a missing queue as empty.
-        files = sorted(f for f in q.iterdir() if f.is_file()) if q.exists() else []
+        files = queued_files(cfg, agent_name)
         if not files:
             return False
         oldest = files[0]
@@ -373,13 +409,30 @@ def nudge(cfg: SwarmConfig, agent_name: str) -> bool:
         f"You can message: {allowed}."
     )
     try:
-        return tmux.paste_into(cfg, agent.session, nudge_text)
+        pasted = tmux.paste_into(cfg, agent.session, nudge_text)
     except tmux.SwarmError:
         # Best-effort: if the agent isn't up (or tmux is unavailable) the mail
         # still sits in the queue and gets released on the next sweep / when the
         # agent starts. Never crash a send because a session is missing -- a
         # paste failure just means we retry on the next tick.
         return False
+    if pasted:
+        # The agent was actually poked about a freshly delivered message, so it
+        # is now mid-turn. Mark the turn STARTED so busy-detection is accurate:
+        # otherwise (delivered stayed == completed after the first prompt) the
+        # supervisor treats a long but legitimate turn as idle, bumps the inbox
+        # message's presentation count every tick, and auto-archives it mid-turn
+        # -- yanking the task and corrupting the turn. The inbox holds exactly
+        # one message (one-at-a-time); its From is the task's origin.
+        sender = None
+        try:
+            msgs = sorted(f for f in mp.inbox.iterdir() if f.is_file())
+            if msgs:
+                sender = _parse_header_field(msgs[0].read_text(), "From")
+        except OSError:  # pragma: no cover - defensive only
+            sender = None
+        turn.mark_turn_started(cfg, agent_name, sender or "system")
+    return pasted
 
 
 def route_outbound(cfg: SwarmConfig, sender: str, recipient: str, body: str) -> str:
@@ -443,9 +496,10 @@ def on_stop(cfg: SwarmConfig, agent_name: str) -> dict:
                 if not sub.is_dir():
                     continue
                 recipient = sub.name
-                for f in sorted(sub.iterdir()):
-                    if not f.is_file():
-                        continue
+                # Route in the order the agent WROTE the files (enqueue/delivery
+                # order follows this), not by the model's arbitrary filenames --
+                # otherwise two messages to the same peer can arrive out of order.
+                for f in sorted((c for c in sub.iterdir() if c.is_file()), key=_queue_order):
                     # about.md is the orchestrator-maintained contact card, not
                     # an outbound message -- never route or delete it.
                     if f.name == "about.md":
@@ -513,21 +567,32 @@ def process_read_folder(cfg: SwarmConfig, agent_name: str) -> int:
     _save_run_json(cfg, f"{agent_name}.read.json", state)
 
     # Auto-archive fallback (plan §7): a single message presented >= N times
-    # without being handled is moved to the archive and the queue advances, so a
-    # forgetful model can never wedge the swarm.
+    # without being handled is moved to the archive so a forgetful model can
+    # never wedge the swarm. We only ARCHIVE here (empty the inbox); we do NOT
+    # release the next message, because the release must be paired with a nudge
+    # -- and every caller (supervisor tick, cmd_idle) runs release_next + nudge
+    # right after us. Releasing here (un-nudged) meant the freshly delivered
+    # message was never announced to the agent, so it silently climbed to its
+    # own auto-archive threshold and was discarded unread -- draining the whole
+    # queue into the archive. Leaving the inbox empty lets the caller's
+    # release+nudge deliver-and-announce the next message like any other.
     inbox = mp.inbox
     if inbox.exists():
         msgs = sorted(f for f in inbox.iterdir() if f.is_file())
         if len(msgs) == 1:
             f = msgs[0]
             pres = _get_presentations(cfg, agent_name)
+            # `processed` holds message CONTENT ids ("m-arc2"), so the
+            # "already handled" guard must compare the inbox message's own
+            # content id -- NOT f.name ("m-arc2.txt"), which never matches and
+            # would let a handled message be archived anyway.
+            inbox_id = _parse_header_field(f.read_text(), "Id")
             if (
                 pres.get("msg_id") == f.name
                 and pres.get("count", 0) >= AUTO_ARCHIVE_PRESENTATIONS
-                and f.name not in processed
+                and inbox_id not in processed
             ):
                 log.archive_message(cfg, agent_name, f)
-                release_next(cfg, agent_name)
 
     return count
 

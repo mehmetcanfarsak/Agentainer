@@ -102,7 +102,7 @@ def patch_launch(monkeypatch, n_agents=2, wait=True, paste=True, always=False):
 
 
 def test_read_version_real():
-    assert cli.read_version() == "2.0.0"
+    assert cli.read_version() == "2.0.1"
 
 
 def test_read_version_fallback(monkeypatch, tmp_path):
@@ -816,6 +816,21 @@ def test_idle_with_drain(tmp_path):
 def test_idle_no_drain(tmp_path):
     cfg = build(tmp_path, GENERAL_AGENTS)
     assert cli.main(["idle", "-c", str(cfg.path), "orchestrator", "--no-drain"]) == 0
+
+
+def test_idle_drain_releases_and_nudges_next(tmp_path):
+    """idle --drain must release the next queued message AND nudge, so the escape
+    hatch re-announces mail rather than leaving it silently sitting in the inbox."""
+    import mail as mail_mod
+
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    mail_mod.init_mailboxes(cfg)
+    mail_mod.enqueue(cfg, "orchestrator", "handle this", "m-drain1")
+    with mock_tmux(has_session=False):
+        assert cli.main(["idle", "-c", str(cfg.path), "orchestrator"]) == 0
+    # the queued message was released into the inbox (and nudge was attempted)
+    inbox = cfg.mail_paths(cfg.get("orchestrator")).inbox
+    assert (inbox / "m-drain1.txt").is_file()
 
 
 # --------------------------------------------------------------------------

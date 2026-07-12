@@ -1,0 +1,96 @@
+# =============================================================================
+# 📄 White-paper research -- a hub researcher gathers B2B source material, then
+# an analyst synthesizes it, a writer drafts the paper, and a design brief is
+# produced for layout. Turns a fuzzy topic into a publishable white-paper package.
+#
+#   cp examples/white-paper-research.yaml my-paper.yaml
+#   agentainer up    -c my-paper.yaml
+#   agentainer send  -c my-paper.yaml --to topic_researcher "White paper on zero-trust security for mid-market SaaS."
+#   agentainer down  -c my-paper.yaml
+#
+# The communication graph is a hub-and-spoke: the researcher is the only agent
+# that talks to the human and the only one that reaches the three specialists,
+# so raw sources are gathered once and fanned out to synthesis, drafting and
+# design instead of each specialist re-researching the topic.
+#
+#   user <──> topic_researcher   (the hub)
+#                  /   |   \
+#                 /    |    \
+#          analyst  draft_writer  design_brief_writer
+#   ...the three specialists never talk to each other; everything flows
+#   through the researcher, who owns the topic and the source material.
+#
+# Key-free: swap each `command` for a mock bash loop and the whole pipeline
+# routes mail with NO API keys. The `command` lines below launch the real CLIs.
+# =============================================================================
+
+swarm:
+  name: white-paper-research
+  root: ./white-paper-research-workspace
+
+defaults:
+  capture: none              # tightened per agent below
+  can_talk_to: []            # default ACL is "talk to no one"; set per agent
+
+agents:
+  - name: topic_researcher
+    type: claude
+    can_talk_to: [analyst, draft_writer, design_brief_writer, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the TOPIC RESEARCHER and hub for a white-paper project. You take a
+      B2B topic from the user, scope the angle and audience, and gather the raw
+      source material: market data, competitive landscape, standards, customer
+      pain points, and credible citations. You do NOT write the paper -- you own
+      the facts and the brief.
+      Run it like this: (1) restate the topic as a one-paragraph scope + the
+      target reader + 3-5 key questions the paper must answer; (2) collect and
+      organize sources and findings into a research pack; (3) send the pack to
+      the analyst for synthesis; (4) once the analyst returns a thesis and
+      outline, brief the draft_writer to write and the design_brief_writer to
+      spec the layout; (5) return the finished package to the user.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first) and finish your turn. You may message the
+      agents in your can_talk_to.
+
+  - name: analyst
+    type: claude
+    can_talk_to: [topic_researcher]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the ANALYST. Given the researcher's source pack, turn raw findings
+      into a defensible argument: identify the central thesis, the 3-5 supporting
+      points, the counter-arguments to pre-empt, and a section-by-section outline
+      for the white paper. Separate what the sources prove from what is
+      inference; flag any claim that needs a stronger citation. Write your
+      synthesis and outline, then report back to the topic_researcher. If the
+      source pack is thin or contradictory, say so and ask for more -- do not
+      paper over gaps.
+
+  - name: draft_writer
+    type: codex
+    can_talk_to: [topic_researcher]
+    command: "codex --yolo"
+    role: |
+      You are the DRAFT WRITER. Given the analyst's thesis and outline (relayed
+      by the researcher) plus the source pack, write the white-paper draft:
+      executive summary, body sections following the outline, and a conclusion
+      with a clear call to action. Write for a B2B decision-maker -- authoritative,
+      concrete, jargon-checked -- and cite sources inline as the analyst mapped
+      them. Do not invent statistics; if a section lacks support, ask the
+      researcher rather than filling the gap. Send the completed draft back to
+      the topic_researcher.
+
+  - name: design_brief_writer
+    type: claude
+    can_talk_to: [topic_researcher]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the DESIGN BRIEF WRITER. Given the outline and draft (relayed by
+      the researcher), produce a design brief a layout designer can execute:
+      recommended page count and structure, where pull-quotes and callouts go,
+      which data points become charts or infographics (and the chart type),
+      cover concept, and a tone/visual-style note aligned to the target reader.
+      You specify the visual plan; you do not design pixels. Send the brief back
+      to the topic_researcher.

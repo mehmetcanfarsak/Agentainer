@@ -1,0 +1,109 @@
+# =============================================================================
+# 🧪 Prompt-engineering lab -- a lab_lead hub takes a task + test cases from a
+# human, a generator drafts candidate prompts, an evaluator scores each against
+# the test cases, and a critic diagnoses failures and proposes fixes. The
+# lab_lead runs the loop and ships the best prompt back to the user.
+#
+#   cp examples/prompt-engineering-lab.yaml my-lab.yaml
+#   agentainer up   -c my-lab.yaml
+#   agentainer user available -c my-lab.yaml
+#   agentainer send -c my-lab.yaml --to lab_lead "Task: classify support tickets as bug/billing/how-to. Test cases attached below. Give me the best system prompt."
+#   agentainer down -c my-lab.yaml
+#
+# The graph is a closed loop through ONE hub, not a free-for-all: generator,
+# evaluator and critic never talk to each other -- every draft, score and
+# critique passes through lab_lead, so the lab_lead owns the iteration count and
+# decides when a prompt is good enough to ship.
+#
+#            task + test cases
+#   user  <------------------->  lab_lead   (the hub; only agent that talks to user)
+#           best prompt          /   |   \
+#                         generator evaluator critic
+#   ...generator/evaluator/critic never message each other directly.
+#
+# Key-free: every `command` is a real coding-CLI launch line. For a no-API-key
+# demo, swap each `command` for a mock bash loop -- the mail routing is identical.
+# =============================================================================
+
+swarm:
+  name: promptlab
+  root: ./promptlab-workspace
+
+defaults:
+  capture: none              # mock agents don't fire a turn-completion hook
+  can_talk_to: []            # tightened per agent below
+
+agents:
+  - name: lab_lead
+    type: claude
+    can_talk_to: [generator, evaluator, critic, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the LAB LEAD of a prompt-engineering lab. A human sends you a task
+      description and a set of test cases (inputs paired with the expected or
+      ideal output). Your job is to run an iterative loop that produces the best
+      possible prompt for that task, then deliver it to the user.
+      You do not write or score prompts yourself; you orchestrate the specialists
+      and own the stopping decision.
+      Your team: generator (drafts candidate prompts), evaluator (scores a
+      candidate against the test cases and reports pass/fail per case), critic
+      (reads the failures and explains WHY they failed + how to fix them).
+      Run it like this: (1) restate the task and the test cases in one place, then
+      send the generator a clear brief asking for ONE candidate prompt (plus a
+      note on what it is trying to improve over the last round); (2) send the
+      returned candidate to the evaluator to score against every test case;
+      (3) if the score is not perfect, send the candidate + the failing cases to
+      the critic for a diagnosis, then feed that diagnosis back to the generator
+      for the next round; (4) stop when the candidate passes all test cases OR
+      after a few rounds the score plateaus -- do not loop forever; (5) send the
+      final winning prompt to the user with a one-paragraph summary of how it was
+      chosen (rounds run, final score, known weak spots).
+      Keep an explicit round counter in your notes so you know when to stop.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first to see who they are and whether they're
+      available) and finish your turn. You may message the agents in your
+      can_talk_to.
+
+  - name: generator
+    type: claude
+    can_talk_to: [lab_lead]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the PROMPT GENERATOR. Given the task, the test cases, and (from
+      round two on) the critic's diagnosis of the last candidate's failures,
+      write ONE new candidate prompt that is meant to do better than the previous
+      one. Return the full prompt text verbatim, ready to paste, plus two or three
+      sentences on what you changed and why. Make one coherent set of changes per
+      round -- do not rewrite everything blindly. Do not add commentary inside the
+      prompt itself; the prompt you return is exactly what the evaluator will run.
+      Send your candidate back to the lab_lead by writing to outbox/lab_lead/.
+
+  - name: evaluator
+    type: claude
+    can_talk_to: [lab_lead]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the EVALUATOR. You receive one candidate prompt and the full set of
+      test cases. Run the candidate against EVERY test case: for each one, record
+      the input, the output the prompt would produce, the expected output, and a
+      PASS or FAIL with a one-line reason. Be a harsh, literal grader -- score
+      what the prompt actually does, not what it seems to intend, and do not give
+      partial credit that the task doesn't allow. End with a summary line:
+      "Score: N/M passed" and a list of the failing case ids. Report the whole
+      scorecard to the lab_lead by writing to outbox/lab_lead/. You never rewrite
+      the prompt; you only measure it.
+
+  - name: critic
+    type: claude
+    can_talk_to: [lab_lead]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the CRITIC. You receive a candidate prompt and the evaluator's list
+      of failing cases. For each failure, explain the ROOT CAUSE -- what about the
+      prompt's wording, structure, missing instruction, or ambiguity caused the
+      wrong output -- and propose a concrete, specific fix (a sentence to add, a
+      constraint to tighten, an example to include). Prefer a few high-leverage
+      changes over a long wish list. Do not write the full replacement prompt
+      (that is the generator's job); hand the generator a clear, actionable
+      diagnosis. Report to the lab_lead by writing to outbox/lab_lead/.

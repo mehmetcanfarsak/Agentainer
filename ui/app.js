@@ -21,6 +21,10 @@
     config: null,         // last /api/config
     telegram: null,       // last /api/telegram
     wrap: (() => { try { return !!localStorage.getItem("paneWrap"); } catch (_) { return false; } })(),
+    rate: (() => { try { return !!localStorage.getItem("showRate"); } catch (_) { return false; } })(),
+    notify: (() => { try { return !!localStorage.getItem("notifyOptIn"); } catch (_) { return false; } })(),
+    rates: {},            // last /api/rate {name: msgs_per_min}
+    lastAttention: 0,     // for the 0 -> >0 notification transition
   };
   const timers = {};
 
@@ -53,6 +57,13 @@
     return sameDay
       ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
       : d.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+  // Seconds -> short human duration ("42s", "3m", "1h4m").
+  function fmtDur(s) {
+    s = Math.max(0, Math.floor(s || 0));
+    if (s < 60) return s + "s";
+    if (s < 3600) return Math.floor(s / 60) + "m";
+    return Math.floor(s / 3600) + "h" + Math.floor((s % 3600) / 60) + "m";
   }
   // Minimal, dependency-free, XSS-safe markdown -> HTML. Everything is escaped
   // first (so agent/user text can never inject markup); we then emit only our
@@ -115,14 +126,45 @@
   // ---- API ---------------------------------------------------------------
 
   function withToken(path) { return path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN); }
+
+  // ---- connection honesty (#1) -------------------------------------------
+  // A monitoring UI must never show frozen data as if it were live. Every
+  // request goes through `rawFetch`, which timestamps the last SERVER response
+  // (any HTTP status counts -- the box answered) and flags a network REJECTION.
+  // The indicator then goes stale from BOTH signals: an explicit down-mark and
+  // a 1s ticker (so a silently-hung server, which never rejects, still ages out).
+  const conn = { lastOk: 0, down: false, ticker: null };
+  function markConn(ok) {
+    if (ok) { conn.lastOk = Date.now(); conn.down = false; }
+    else { conn.down = true; }
+    renderConn();
+  }
+  function renderConn() {
+    const node = $("connind"); if (!node || node.hidden) return;
+    const age = conn.lastOk ? Date.now() - conn.lastOk : Infinity;
+    if (!conn.down && age < 8000) {
+      node.className = "connind live";
+      node.textContent = "● Live · " + fmtDur(age / 1000) + " ago";
+    } else {
+      node.className = "connind stale";
+      node.textContent = "◌ Reconnecting…";
+    }
+  }
+  function rawFetch(path, opts) {
+    return fetch(withToken(path), opts).then(
+      (r) => { markConn(true); return r; },
+      (err) => { markConn(false); throw err; },
+    );
+  }
+
   function apiGet(path) {
-    return fetch(withToken(path), { headers: { Accept: "application/json" } }).then((r) => {
+    return rawFetch(path, { headers: { Accept: "application/json" } }).then((r) => {
       if (r.status === 401) throw new Error("unauthorized");
       return r.json();
     });
   }
   function apiPost(path, body) {
-    return fetch(withToken(path), {
+    return rawFetch(path, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}),
     }).then((r) => r.json().then((j) => ({ ok: r.ok, status: r.status, j })).catch(() => ({ ok: r.ok, status: r.status, j: {} })));
   }
@@ -138,8 +180,14 @@
       $("view").hidden = false;
       $("nav").hidden = false;
       $("availWrap").hidden = false;
+      $("connind").hidden = false;
+      // A GLOBAL heartbeat (kept out of `timers`, so clearTimers/navigation never
+      // stops it) re-renders the indicator every second so it ages out on its own.
+      if (!conn.ticker) conn.ticker = setInterval(renderConn, 1000);
+      renderConn();
       banner("");
       syncAvailability(data.user_available);
+      state.lastAttention = data.attention || 0;
       go("agents");
     }).catch((e) => banner("connect failed: " + e.message));
   }
@@ -163,22 +211,41 @@
 
   // ---- agents overview ---------------------------------------------------
 
+  // Truthful state vocabulary (see /api/status `state`): what the agent is
+  // actually doing, not just whether tmux is up.
+  const STATE_LABEL = {
+    working: "working", waiting: "waiting", attention: "needs you",
+    stalled: "stalled", stopped: "stopped",
+  };
+
   function statusPills(a) {
-    const run = a.running ? '<span class="pill ok"><span class="dotpulse"></span>running</span>'
-                          : '<span class="pill no">stopped</span>';
-    const st = a.busy ? '<span class="pill busy">busy</span>' : '<span class="pill mute">idle</span>';
+    // Fall back to the old running/busy signals if `state` is absent.
+    const s = a.state || (a.running ? (a.busy ? "working" : "waiting") : "stopped");
+    let label = STATE_LABEL[s] || s;
+    if (s === "working" && a.working_s) label = "working " + fmtDur(a.working_s);
+    const dot = s === "working" ? '<span class="dotpulse"></span>' : "";
+    const stp = `<span class="pill st-${s}" title="${esc(STATE_LABEL[s] || s)}">${dot}${esc(label)}</span>`;
     const un = a.unread ? `<span class="pill busy">${a.unread} unread</span>` : "";
     const q = a.queue_depth ? `<span class="pill mute">${a.queue_depth} queued</span>` : "";
     // A down agent gets a Start button; a running one gets a Stop button.
     const act = a.running
       ? `<button class="pill downbtn" data-down="${esc(a.name)}">■ Stop</button>`
       : `<button class="pill upbtn" data-up="${esc(a.name)}">▶ Start</button>`;
-    return run + st + act + un + q;
+    // A stalled agent (busy past its timeout -- completion signal lost) gets the
+    // fix inline: nudge it with Escape, or restart it, without digging into the
+    // Terminal tab. Wired through the delegated document listener (data-esc /
+    // data-restart) so poll-recreated buttons keep working.
+    const recover = s === "stalled"
+      ? `<button class="pill recover" data-esc="${esc(a.name)}" title="Send Escape to unstick the turn">⎋ Esc</button>`
+        + `<button class="pill recover" data-restart="${esc(a.name)}" title="Restart this agent's session">↻ Restart</button>`
+      : "";
+    return stp + act + recover + un + q;
   }
 
   function renderAgents() {
-    // Clear any prior poll timer so a poll-triggered re-render can't stack them.
+    // Clear any prior poll timers so a poll-triggered re-render can't stack them.
     if (timers.status) { clearInterval(timers.status); delete timers.status; }
+    if (timers.rate) { clearInterval(timers.rate); delete timers.rate; }
     const agents = (state.status && state.status.agents) || [];
     const cards = agents.map((a) => `
       <div class="card agentcard" data-agent="${esc(a.name)}">
@@ -188,21 +255,51 @@
             <div class="name">${esc(a.name)}</div>
             <div class="muted" style="font-size:.8rem">${esc(a.type)}</div>
           </div>
+          ${state.rate ? `<span class="rateline" data-rateline="${esc(a.name)}"></span>` : ""}
         </div>
         <div class="role" data-role="${esc(a.name)}">${esc(a.role_preview || "")}</div>
         <div class="meta">${statusPills(a)}</div>
         <div class="muted" style="font-size:.78rem">talks to: ${esc((a.can_talk_to || []).join(", ") || "—")}</div>
       </div>`).join("");
+    const notifyTgl = ("Notification" in window)
+      ? `<label class="tgl"><input type="checkbox" id="notifyTgl" ${state.notify ? "checked" : ""}/> Notify</label>` : "";
+    // Bulk controls only make sense once the swarm has agents to act on.
+    const bulk = agents.length ? `
+          <button class="btn ghost sm bulk-btn" id="startAll" title="Start every stopped agent">Start all</button>
+          <button class="btn ghost sm bulk-btn" id="stopAll" title="Stop every running agent">Stop all</button>
+          <button class="btn ghost sm bulk-btn" id="restartAll" title="Restart every agent">Restart all</button>` : "";
+    const body = cards
+      ? `<div class="grid">${cards}</div>`
+      : `<div id="emptyAgents"><p class="empty">Loading templates…</p></div>`;
     $("view").innerHTML = `
       <div class="sectiontitle">
         <h2>Agents <span class="muted" style="font-weight:500">(${agents.length})</span></h2>
-        <button class="btn ghost sm" id="refreshBtn">Refresh</button>
+        <div class="agents-tools">
+          <label class="tgl" title="Show each agent's recent message rate"><input type="checkbox" id="rateTgl" ${state.rate ? "checked" : ""}/> Show rate</label>
+          ${notifyTgl}
+          ${bulk}
+          <button class="btn ghost sm" id="refreshBtn">Refresh</button>
+        </div>
       </div>
       ${topologyCard(agents)}
-      <div class="grid">${cards || '<p class="empty">No agents configured. Add one in Settings.</p>'}</div>`;
+      ${body}`;
     $("refreshBtn").onclick = pollStatus;
+    if ($("startAll")) $("startAll").onclick = () => bulkAction("up");
+    if ($("stopAll")) $("stopAll").onclick = () => bulkAction("down");
+    if ($("restartAll")) $("restartAll").onclick = () => bulkAction("restart");
+    $("rateTgl").onchange = (e) => toggleRate(e.target.checked);
+    if ($("notifyTgl")) $("notifyTgl").onchange = (e) => toggleNotify(e.target.checked);
+    if (!cards) loadTemplates();
+    if (state.rate) { loadRates(); timers.rate = setInterval(loadRates, 5000); }
     for (const c of document.querySelectorAll(".agentcard"))
-      c.onclick = () => openAgent(c.dataset.agent);
+      c.onclick = (e) => {
+        // The Start/Stop and stalled-recovery pills live inside the card; the
+        // delegated document listener handles them. Its stopPropagation fires too
+        // late to stop this (closer) handler, so skip opening the mail page for
+        // those clicks here.
+        if (e.target.closest("[data-up],[data-down],[data-esc],[data-restart]")) return;
+        openAgent(c.dataset.agent);
+      };
     for (const g of document.querySelectorAll(".gnode")) {
       g.onclick = () => openAgent(g.dataset.agent);
       g.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openAgent(g.dataset.agent); } };
@@ -215,6 +312,86 @@
   }
 
   function cssq(s) { return String(s).replace(/"/g, '\\"'); }
+
+  // ---- "the swarm needs you" signal (#3) ---------------------------------
+
+  // Fire a browser notification only on the 0 -> >0 edge, and only when opted in.
+  function maybeNotify(attention) {
+    const prev = state.lastAttention || 0;
+    state.lastAttention = attention;
+    if (!state.notify || !("Notification" in window)) return;
+    if (attention > 0 && prev === 0 && Notification.permission === "granted") {
+      try {
+        new Notification("Agentainer", {
+          body: attention + " message" + (attention > 1 ? "s" : "") + " awaiting your reply",
+        });
+      } catch (_) {}
+    }
+  }
+
+  function toggleNotify(on) {
+    if (on && "Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().then((p) => {
+        if (p !== "granted") {
+          state.notify = false;
+          try { localStorage.setItem("notifyOptIn", ""); } catch (_) {}
+          const t = $("notifyTgl"); if (t) t.checked = false;
+          toast("notifications blocked by the browser");
+        }
+      });
+    }
+    state.notify = on;
+    try { localStorage.setItem("notifyOptIn", on ? "1" : ""); } catch (_) {}
+  }
+
+  // ---- optional message rate (#6, off by default) ------------------------
+
+  function toggleRate(on) {
+    state.rate = on;
+    try { localStorage.setItem("showRate", on ? "1" : ""); } catch (_) {}
+    if (state.view === "agents") renderAgents();
+  }
+
+  function loadRates() {
+    if (!state.rate) return;
+    apiGet("/api/rate?window=5").then((d) => {
+      state.rates = (d && d.rates) || {};
+      for (const el of document.querySelectorAll("[data-rateline]")) {
+        const v = state.rates[el.dataset.rateline] || 0;
+        el.textContent = v.toFixed(1) + "/min";
+      }
+    }).catch(() => {});
+  }
+
+  // ---- onboarding: start from a template (#4) ----------------------------
+
+  function loadTemplates() {
+    const box = $("emptyAgents"); if (!box) return;
+    const fallback = '<p class="empty">No agents configured. Add one in Settings.</p>';
+    apiGet("/api/templates").then((d) => {
+      const tpls = (d && d.templates) || [];
+      if (!tpls.length) { box.innerHTML = fallback; return; }
+      box.innerHTML = `
+        <div class="tpl-intro"><b>Start from a template</b><span class="muted"> — or add your own in Settings.</span></div>
+        <div class="tplgrid">${tpls.map((x) => `
+          <button class="card tpl" data-tpl="${esc(x.name)}">
+            <div class="tpl-title">${esc(x.title || x.name)}</div>
+            <div class="muted tpl-sum">${esc(x.summary || "")}</div>
+            <div class="tpl-meta muted">${esc(String(x.agents || 0))} agent${x.agents === 1 ? "" : "s"}</div>
+          </button>`).join("")}</div>`;
+      for (const b of box.querySelectorAll("[data-tpl]"))
+        b.onclick = () => applyTemplate(b.dataset.tpl, b);
+    }).catch(() => { box.innerHTML = fallback; });
+  }
+
+  function applyTemplate(name, btn) {
+    if (btn) btn.disabled = true;
+    apiPost("/api/templates/apply", { name }).then((res) => {
+      if (!res.ok) { toast("error: " + (res.j.error || "failed")); if (btn) btn.disabled = false; return; }
+      toast("added " + ((res.j.added || []).length) + " agents from " + name);
+      pollStatus();
+    });
+  }
 
   // Bring one agent up (from a `.upbtn` on a card or the mail header).
   function startAgent(name, btn) {
@@ -246,10 +423,39 @@
     });
   }
 
+  // Start / stop / restart every agent at once (buttons in the Agents header).
+  // Buttons are disabled for the duration so a double-click can't fire twice.
+  function bulkAction(kind) {
+    if (kind === "down" && !confirm("Stop ALL running agents? Each tmux session (and any in-flight turn) will be killed.")) return;
+    if (kind === "restart" && !confirm("Restart ALL agents? Running sessions are killed, then every configured agent is relaunched.")) return;
+    const btns = Array.from(document.querySelectorAll(".bulk-btn"));
+    btns.forEach((b) => { b.disabled = true; });
+    let p;
+    if (kind === "up") {
+      p = apiPost("/api/up_all", {}).then((res) => bulkToast(res, "started"));
+    } else if (kind === "down") {
+      p = apiPost("/api/down_all", {}).then((res) => bulkToast(res, "stopped"));
+    } else {
+      p = apiPost("/api/down_all", {}).then((res) => {
+        if (!res.ok) { toast("error: " + (res.j.error || "failed")); return; }
+        return apiPost("/api/up_all", {}).then((r2) => bulkToast(r2, "started", "restarted"));
+      });
+    }
+    p.catch(() => toast("network error"))
+      .finally(() => { btns.forEach((b) => { b.disabled = false; }); pollStatus(); });
+  }
+
+  function bulkToast(res, key, verb) {
+    if (!res || !res.ok) { toast("error: " + ((res && res.j.error) || "failed")); return; }
+    toast((verb || key) + " " + ((res.j[key] || []).length));
+  }
+
   function pollStatus() {
     apiGet("/api/status").then((data) => {
       state.status = data;
+      banner("");  // recovered: clear any stale "connect failed" / poll error
       syncAvailability(data.user_available);
+      maybeNotify(data.attention || 0);
       $("swarmMeta").textContent = (data.name || "swarm") + " · " + ((data.agents || []).length) + " agents";
       if (state.view === "agents") {
         const agents = data.agents || [];
@@ -280,6 +486,8 @@
   }
 
   function drawTopology(agents) {
+    const byName = {};
+    agents.forEach((a) => { byName[a.name] = a; });
     const nodes = agents.map((a) => a.name);
     if (agents.some((a) => (a.can_talk_to || []).includes("user"))) nodes.push("user");
     const W = 560, H = 300, cx = W / 2, cy = H / 2, r = Math.min(W, H) / 2 - 48, N = nodes.length;
@@ -293,14 +501,23 @@
       if (pos[a.name] && pos[p]) {
         const s = pos[a.name], t = pos[p];
         const dx = t.x - s.x, dy = t.y - s.y, len = Math.hypot(dx, dy) || 1, R = 21;
-        edges += `<line x1="${s.x + (dx / len) * R}" y1="${s.y + (dy / len) * R}" x2="${t.x - (dx / len) * R}" y2="${t.y - (dy / len) * R}" class="edge" marker-end="url(#arrow)"/>`;
+        // Live flow: an edge INTO a node that has unread mail is "carrying" mail.
+        const live = byName[p] && byName[p].unread > 0;
+        edges += `<line x1="${s.x + (dx / len) * R}" y1="${s.y + (dy / len) * R}" x2="${t.x - (dx / len) * R}" y2="${t.y - (dy / len) * R}" class="edge${live ? " edge-live" : ""}" marker-end="url(#arrow)"/>`;
       }
     }));
     const circles = nodes.map((n) => {
       const p = pos[n];
-      const fill = n === "user" ? "hsl(215 62% 48%)" : `hsl(${hueFor(n)} 62% 48%)`;
-      const clickable = n !== "user";
-      return `<g${clickable ? ` class="gnode" data-agent="${esc(n)}" role="button" tabindex="0" aria-label="open ${esc(n)}"` : ""}>
+      const isUser = n === "user";
+      const st = isUser ? null : ((byName[n] && byName[n].state) || "waiting");
+      const fill = isUser ? "hsl(215 62% 48%)" : `hsl(${hueFor(n)} 62% 48%)`;
+      const clickable = !isUser;
+      // A status ring around the node, colored by live state (waiting = none).
+      const ring = (st && st !== "waiting")
+        ? `<circle cx="${p.x}" cy="${p.y}" r="23" fill="none" class="gring gring-${st}"/>` : "";
+      const dim = st === "stopped" ? ' opacity="0.55"' : "";
+      return `<g${clickable ? ` class="gnode" data-agent="${esc(n)}" role="button" tabindex="0" aria-label="open ${esc(n)}"` : ""}${dim}>
+        ${ring}
         <circle cx="${p.x}" cy="${p.y}" r="19" fill="${fill}"/>
         <text x="${p.x}" y="${p.y + 4}" text-anchor="middle" class="gnode-t">${esc(initials(n))}</text>
         <text x="${p.x}" y="${p.y + 36}" text-anchor="middle" class="gnode-l">${esc(n === "user" ? "you" : n)}</text></g>`;
@@ -482,6 +699,12 @@
 
   function renderThread() {
     const scroll = $("threadScroll"); if (!scroll) return;
+    // Idempotent: the 4s mail poll calls this even when nothing changed.
+    // Reassigning innerHTML rebuilds every node and wipes any text the user
+    // has selected, so bail out when the thread is byte-for-byte the same.
+    const sig = JSON.stringify(state.thread.map((m) => [m.from, m.to, m.time, m.status, m.body]));
+    if (scroll.dataset.sig === sig) { renderCompose(); return; }
+    scroll.dataset.sig = sig;
     const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60;
     if (!state.thread.length) {
       scroll.innerHTML = `<p class="empty">No messages between <b>${esc(state.agent)}</b> and <b>${esc(state.peer === "user" ? "you" : state.peer)}</b> yet.</p>`;
@@ -490,11 +713,41 @@
         const cls = m.from === "system" ? "system" : m.direction === "out" ? "out" : "in";
         const head = cls === "system" ? "system" : `${esc(m.from)} → ${esc(m.to)} · ${esc(fmtTime(m.time))}`;
         const status = cls === "system" ? "" : statusTag(m.status);
-        return `<div class="msg ${cls}"><div class="m-head">${head}</div><div class="m-body">${md(m.body.trim())}</div>${status}</div>`;
+        return `<div class="msg ${cls}"><div class="m-head">${head}</div>${mailBody(m.body)}${status}</div>`;
       }).join("");
+      for (const btn of scroll.querySelectorAll(".m-more")) btn.onclick = () => toggleCollapse(btn);
     }
     if (atBottom) scroll.scrollTop = scroll.scrollHeight;
     renderCompose();
+  }
+
+  // Long mails are hard to scroll past, so bodies over COLLAPSE_LINES lines are
+  // clipped to the first COLLAPSE_LINES with a "Show N more lines" toggle. Both
+  // the short and full renders are prebuilt; the button just swaps which shows.
+  const COLLAPSE_LINES = 10;
+  function mailBody(raw) {
+    const src = (raw || "").trim();
+    const lines = src.split("\n");
+    if (lines.length <= COLLAPSE_LINES)
+      return `<div class="m-body">${md(src)}</div>`;
+    const hidden = lines.length - COLLAPSE_LINES;
+    const short = md(lines.slice(0, COLLAPSE_LINES).join("\n"));
+    const full = md(src);
+    return `<div class="m-body collapsible" data-collapsed="1">`
+      + `<div class="m-short">${short}</div>`
+      + `<div class="m-full" hidden>${full}</div>`
+      + `<button class="m-more" type="button" data-more="${hidden}">Show ${hidden} more line${hidden > 1 ? "s" : ""}</button>`
+      + `</div>`;
+  }
+
+  function toggleCollapse(btn) {
+    const box = btn.closest(".collapsible"); if (!box) return;
+    const collapse = box.dataset.collapsed !== "1"; // flip current state
+    box.dataset.collapsed = collapse ? "1" : "0";
+    box.querySelector(".m-short").hidden = !collapse;
+    box.querySelector(".m-full").hidden = collapse;
+    const n = btn.dataset.more;
+    btn.textContent = collapse ? `Show ${n} more line${n > 1 ? "s" : ""}` : "Show less";
   }
 
   // Delivery status of one message, from where it currently sits in the mailroom.
@@ -558,11 +811,27 @@
     { key: "C-l", label: "Ctrl-L", title: "Redraw / clear (Ctrl-L)" },
   ];
 
-  function sendKey(key) {
-    apiPost("/api/key", { agent: state.agent, key }).then((res) => {
+  // `agent` is optional: the Terminal keypad omits it (targets the open agent),
+  // the stalled-recovery ⎋ Esc button passes the card's name explicitly.
+  function sendKey(key, agent) {
+    const name = agent || state.agent;
+    apiPost("/api/key", { agent: name, key }).then((res) => {
       if (!res.ok) { toast("error: " + (res.j.error || "failed")); return; }
-      toast(key + " → " + state.agent);
-      setTimeout(loadPane, 300);
+      toast(key + " → " + name);
+      if (name === state.agent) setTimeout(loadPane, 300);
+    });
+  }
+
+  // Restart one agent by name (stop, then start) -- the stalled-recovery action.
+  function restartAgent(name) {
+    toast("restarting " + name + "…");
+    apiPost("/api/down", { agent: name }).then((res) => {
+      if (!res.ok) { toast("error: " + (res.j.error || "failed")); return; }
+      apiPost("/api/up", { agent: name }).then((r2) => {
+        if (!r2.ok) { toast("error: " + (r2.j.error || "failed")); return; }
+        toast("restarted " + name);
+        setTimeout(() => { pollStatus(); refreshMailStatus(); }, 800);
+      });
     });
   }
 
@@ -851,13 +1120,17 @@
   for (const b of document.querySelectorAll(".navbtn"))
     b.addEventListener("click", () => go(b.dataset.view));
   // Delegated: Start buttons are re-created by status polls, so listen once here
-  // instead of re-wiring on every render. stopPropagation keeps a Start click on
-  // an agent card from also opening that agent's mail page.
+  // instead of re-wiring on every render. (The card's own onclick skips these
+  // buttons directly, since this document-level handler bubbles too late to.)
   document.addEventListener("click", (e) => {
     if (!e.target.closest) return;
     const up = e.target.closest("[data-up]");
     if (up) { e.stopPropagation(); startAgent(up.dataset.up, up); return; }
     const down = e.target.closest("[data-down]");
-    if (down) { e.stopPropagation(); stopAgent(down.dataset.down, down); }
+    if (down) { e.stopPropagation(); stopAgent(down.dataset.down, down); return; }
+    const escBtn = e.target.closest("[data-esc]");
+    if (escBtn) { e.stopPropagation(); sendKey("Escape", escBtn.dataset.esc); return; }
+    const restart = e.target.closest("[data-restart]");
+    if (restart) { e.stopPropagation(); restartAgent(restart.dataset.restart); }
   });
 })();

@@ -1,0 +1,127 @@
+# =============================================================================
+# 🚚 Migration planner -- turn a scary cloud/database migration into a reviewed,
+# reversible plan. A `lead` hub takes a one-line migration goal from a human,
+# fans the work out to three specialists, and delivers a cutover plan + a
+# fallback plan back to the user.
+#
+#   cp examples/migration-planner.yaml my-migration.yaml
+#   agentainer up   -c my-migration.yaml
+#   agentainer user available -c my-migration.yaml
+#   agentainer send -c my-migration.yaml --to lead \
+#       "Postgres 12 -> 16 on AWS RDS, 400GB, one primary + two read replicas, <30min downtime budget."
+#   agentainer down -c my-migration.yaml
+#
+# The graph is a hub-and-spoke: the lead is the only agent that talks to the
+# human, and the three specialists report only back to the lead -- so risks,
+# the cutover plan and the rollback plan are reconciled in ONE place before you
+# ever see them, instead of three half-answers landing in your lap.
+#
+#      migration goal
+#   user ----------------> lead <--> assessor   (risks / deps / blast radius)
+#      (plan + rollback) <--  |  <--> planner    (step-by-step cutover)
+#                             |  <--> rollback   (fallback / abort plan)
+#   ...assessor, planner and rollback never talk to each other or to the user;
+#   everything funnels through the lead.
+#
+# Key-free: every `command` is a real coding-CLI launch line. Swap them for a
+# mock bash loop if you want to watch the routing with NO API keys.
+# =============================================================================
+
+swarm:
+  name: migration
+  root: ./migration-workspace
+
+defaults:
+  capture: none              # claude agents auto-upgrade to their Stop hook at `up`
+  can_talk_to: []            # tightened per agent below
+
+agents:
+  - name: lead
+    type: claude
+    can_talk_to: [assessor, planner, rollback, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the MIGRATION LEAD. A human sends you a one-line migration goal
+      (e.g. "Postgres 12 -> 16 on AWS RDS, 400GB, <30min downtime"). You own the
+      outcome; you do not do the analysis yourself, you coordinate three
+      specialists and reconcile their work into one deliverable for the user.
+      Your team: assessor (finds risks, dependencies and blast radius), planner
+      (writes the ordered cutover runbook), rollback (writes the fallback/abort
+      plan).
+      Run it like this: (1) restate the goal as a short brief -- source and
+      target versions/engines, data size, replication topology, downtime budget,
+      compliance constraints -- and send that same brief to the assessor FIRST;
+      (2) once the assessor returns the risk register, forward the brief plus the
+      risks to the planner and to rollback (the rollback plan must cover the
+      assessor's top risks and every irreversible step in the planner's runbook,
+      so brief rollback last if you can); (3) sanity-check that the cutover plan
+      and the fallback plan actually fit together -- every point of no return in
+      the cutover must have a matching abort path -- and only then deliver BOTH
+      documents to the user in one message, with a one-paragraph go/no-go
+      recommendation on top. If a specialist's answer is vague ("test
+      thoroughly"), send it back for specifics before you accept it.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first to see who they are and whether they are
+      available) and then finish your turn. You may only message the agents in
+      your can_talk_to list.
+
+  - name: assessor
+    type: claude
+    can_talk_to: [lead]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the RISK ASSESSOR. Given a migration brief, produce a concrete
+      RISK REGISTER before anyone writes a plan. Inventory: breaking changes
+      between source and target versions (deprecated types, syntax, config
+      defaults, collation/encoding shifts), extensions/drivers/ORMs that may not
+      survive the jump, replication and connection-pooler implications, data
+      volume vs. downtime budget, and anything irreversible. For each risk give:
+      likelihood, blast radius (who/what breaks), and a detection signal. Rank
+      them; call out the top three explicitly. Do not invent facts about the
+      environment -- if the brief omits something load-bearing (data size,
+      replica topology, app language), list it as an OPEN QUESTION back to the
+      lead rather than guessing. Report only to the lead by writing to
+      outbox/lead/.
+      MAILBOX: read inbox/, do the work, move the message to read/ when done. To
+      reply, write a file into outbox/lead/ and finish your turn.
+
+  - name: planner
+    type: claude
+    can_talk_to: [lead]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the CUTOVER PLANNER. Given the brief and the assessor's risk
+      register, write the step-by-step CUTOVER RUNBOOK the on-call engineer will
+      actually follow at 2am. Cover the full arc: pre-flight checks and backups,
+      how the new target is stood up and data is loaded/replicated, the
+      validation gates, the exact cutover switch (DNS/connection string/pooler
+      flip), post-cutover verification, and cleanup. Every step needs an owner, a
+      concrete command or action (not "migrate the data" but *how*), an expected
+      result, and a checkpoint that says whether to proceed or hold. Mark each
+      IRREVERSIBLE step clearly and note the last safe point to abort -- the
+      rollback agent depends on this. Keep the plan inside the stated downtime
+      budget or say plainly that it cannot be met and why. Report only to the
+      lead by writing to outbox/lead/.
+      MAILBOX: read inbox/, do the work, move the message to read/ when done. To
+      reply, write a file into outbox/lead/ and finish your turn.
+
+  - name: rollback
+    type: claude
+    can_talk_to: [lead]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the ROLLBACK PLANNER. Your job is to make the migration
+      reversible. Given the brief, the risk register and the cutover runbook,
+      write the FALLBACK PLAN: for each phase of the cutover, the trigger that
+      says "abort now", the exact steps to return to a known-good state, the
+      expected recovery-time and any data-loss window, and how to verify the
+      rollback actually worked. Pay special attention to the planner's
+      IRREVERSIBLE steps -- once the old primary is decommissioned or writes have
+      landed only on the new engine, "roll back" may mean "restore from backup
+      and replay", so spell that out honestly, including how much data is at
+      risk. If a step has no viable rollback, say so loudly and propose a safer
+      alternative for the planner. Report only to the lead by writing to
+      outbox/lead/.
+      MAILBOX: read inbox/, do the work, move the message to read/ when done. To
+      reply, write a file into outbox/lead/ and finish your turn.

@@ -208,6 +208,57 @@ def test_stop_one_unknown_agent(tmp_path):
         reconcile.stop_one(cfg, "ghost")
 
 
+def test_start_all_starts_every_down_agent(tmp_path):
+    cfg = load_swarm(tmp_path, AGENTS)
+    started = []
+    with mock.patch.object(tmuxmod, "session_exists", return_value=False):
+        out = reconcile.start_all(
+            cfg, _start_fn=lambda c, a, r: started.append(a.name)
+        )
+    assert sorted(out) == ["alice", "bob"]
+    assert sorted(started) == ["alice", "bob"]
+
+
+def test_start_all_default_start_fn(tmp_path):
+    # No _start_fn: exercise the lazy `import cli` default-launcher branch.
+    import cli
+
+    cfg = load_swarm(tmp_path, AGENTS)
+    launched = []
+    with mock.patch.object(tmuxmod, "session_exists", return_value=False), mock.patch.object(
+        cli, "launch_agent_full", lambda c, a, r=None: launched.append(a.name)
+    ):
+        out = reconcile.start_all(cfg)
+    assert sorted(out) == ["alice", "bob"]
+    assert sorted(launched) == ["alice", "bob"]
+
+
+def test_stop_all_kills_running(tmp_path):
+    cfg = load_swarm(tmp_path, AGENTS)
+    killed = []
+
+    def fake_tmux(*args, **kw):
+        if args and args[0] == "kill-session":
+            killed.append(args[2])
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    with mock.patch.object(tmuxmod, "session_exists", return_value=True), mock.patch.object(
+        tmuxmod, "tmux", side_effect=fake_tmux
+    ):
+        out = reconcile.stop_all(cfg)
+    assert sorted(out) == ["alice", "bob"]
+    assert sorted(killed) == ["=t-alice", "=t-bob"]
+
+
+def test_stop_all_noop_when_all_down(tmp_path):
+    cfg = load_swarm(tmp_path, AGENTS)
+    with mock.patch.object(tmuxmod, "session_exists", return_value=False), mock.patch.object(
+        tmuxmod, "tmux", side_effect=AssertionError("should not kill a down agent")
+    ):
+        out = reconcile.stop_all(cfg)
+    assert out == []
+
+
 # --------------------------------------------------------------------------
 # config mutation: add / remove / edit
 # --------------------------------------------------------------------------
@@ -268,6 +319,30 @@ def test_edit_agent_coercion(tmp_path):
         assert False, "editing missing agent should raise"
     except ValueError:
         pass
+
+
+def test_remove_agent_referenced_by_another(tmp_path):
+    """Removing an agent that others can_talk_to must strip the now-dangling
+    references, or the reload rejects them and leaves an unloadable config on
+    disk. (bob's can_talk_to lists alice.)"""
+    cfg = load_swarm(tmp_path, AGENTS)
+    new = reconcile.remove_agent(cfg, "alice")
+    assert new.names() == ["bob"]
+    assert new.get("bob").can_talk_to == ["user"]   # alice stripped, user kept
+    # The on-disk config is still valid and loadable.
+    assert "alice" not in cfgmod.load(cfg.path).names()
+
+
+def test_rejected_edit_does_not_corrupt_config_on_disk(tmp_path):
+    """A rejected edit (here: pointing can_talk_to at a non-existent agent) must
+    leave the previous config intact rather than persisting the broken one."""
+    cfg = load_swarm(tmp_path, AGENTS)
+    original = Path(cfg.path).read_text()
+    with pytest.raises(cfgmod.ConfigError):
+        reconcile.edit_agent(cfg, "alice", can_talk_to="ghost")
+    # File is byte-for-byte unchanged and still loads.
+    assert Path(cfg.path).read_text() == original
+    assert cfgmod.load(cfg.path).get("alice").can_talk_to == ["user"]
 
 
 # --------------------------------------------------------------------------
@@ -530,3 +605,53 @@ def test_sys_path_guard_inserts():
     assert mod._scalar(1) == "1"
 
 
+
+
+# --------------------------------------------------------------------------
+# apply_template (onboarding: seed an empty swarm from an example)
+# --------------------------------------------------------------------------
+
+
+TEMPLATE_AGENTS = [
+    {"name": "writer", "type": "claude", "command": "echo hi", "can_talk_to": ["user"]},
+    {"name": "editor", "type": "claude", "command": "echo hi", "can_talk_to": ["writer"]},
+]
+
+
+def _empty_cfg_no_defaults(tmp_path):
+    """A valid zero-agent config that carries NO ``defaults:`` block."""
+    root = tmp_path / "ws"
+    root.mkdir(exist_ok=True)
+    path = tmp_path / "nd.yaml"
+    path.write_text(f'swarm:\n  root: {root}\n  session_prefix: "t-"\nagents: []\n')
+    return cfgmod.load(path)
+
+
+def test_apply_template_seeds_empty(tmp_path):
+    empty = load_swarm(tmp_path, "")  # zero agents (agent_yaml adds a defaults block)
+    assert empty.names() == []
+    added = reconcile.apply_template(empty, TEMPLATE_AGENTS)
+    assert added == ["writer", "editor"]
+    assert cfgmod.load(empty.path).names() == ["writer", "editor"]
+
+
+def test_apply_template_merges_defaults_when_absent(tmp_path):
+    empty = _empty_cfg_no_defaults(tmp_path)
+    reconcile.apply_template(empty, TEMPLATE_AGENTS, {"boot_delay_ms": 250})
+    raw = reconcile.load_raw(empty.path)
+    assert raw["defaults"] == {"boot_delay_ms": 250}
+    assert cfgmod.load(empty.path).names() == ["writer", "editor"]
+
+
+def test_apply_template_keeps_existing_defaults(tmp_path):
+    # load_swarm writes `defaults: {type: claude}`, so template defaults are NOT
+    # merged over the existing block.
+    empty = load_swarm(tmp_path, "")
+    reconcile.apply_template(empty, TEMPLATE_AGENTS, {"type": "gemini"})
+    assert reconcile.load_raw(empty.path)["defaults"] == {"type": "claude"}
+
+
+def test_apply_template_refuses_nonempty(tmp_path):
+    cfg = load_swarm(tmp_path, AGENTS)
+    with pytest.raises(ValueError):
+        reconcile.apply_template(cfg, TEMPLATE_AGENTS)

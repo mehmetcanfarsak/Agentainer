@@ -555,8 +555,7 @@ def cmd_queue(args) -> int:
                     dropped += 1
         info(f"{agent.name}: dropped {dropped} queued message(s)")
         return 0
-    q = cfg.queue_dir / agent.name
-    items = sorted(f for f in q.iterdir() if f.is_file()) if q.is_dir() else []
+    items = mail.queued_files(cfg, agent.name)
     state = turn.busy_info(cfg, agent)
     status = f"busy for {state['age_s']}s (task from {state['by']})" if state else "idle"
     print(f"{agent.name}: {status}, {len(items)} message(s) queued")
@@ -574,6 +573,11 @@ def cmd_idle(args) -> int:
     info(f"{agent.name}: marked idle")
     if not args.no_drain:
         mail.process_read_folder(cfg, agent.name)
+        # process_read_folder only archives an over-presented message; pair the
+        # release of the next queued message with a nudge, exactly as the
+        # supervisor tick does, so the escape hatch actually re-announces mail.
+        if mail.release_next(cfg, agent.name):
+            mail.nudge(cfg, agent.name)
     return 0
 
 

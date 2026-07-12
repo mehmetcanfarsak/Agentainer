@@ -1,0 +1,90 @@
+# =============================================================================
+# 📖 Ebook generator -- an outliner hub commissions chapters, edits, and formats
+# a nonfiction ebook for self-publishing.
+#
+#   cp examples/ebook-generator.yaml my-book.yaml
+#   agentainer up   -c my-book.yaml
+#   agentainer send -c my-book.yaml --to outliner "Write a short ebook on home composting for beginners."
+#   agentainer down -c my-book.yaml
+#
+# The communication graph is a hub-and-spoke: the outliner owns the book's
+# structure and is the only agent that talks to the human. It hands chapter
+# briefs to the writer, sends drafts to the editor, and passes the edited
+# manuscript to the formatter -- work flows through one place, not sideways.
+#
+#           user
+#            |
+#         outliner   <--> chapter_writer
+#         (the hub)  <--> editor
+#                    <--> formatter
+#   ...spokes never talk to each other; every handoff routes through outliner.
+#
+# Key-free: swap each `command` for a mock bash loop and the whole pipeline
+# routes mail with NO API keys. The `command` lines below launch the real CLIs.
+# =============================================================================
+
+swarm:
+  name: ebook-generator
+  root: ./ebook-generator-workspace
+
+defaults:
+  capture: none              # keyed off `type`; hook-capable CLIs auto-upgrade
+  can_talk_to: []            # tightened per agent below
+
+agents:
+  - name: outliner
+    type: claude
+    can_talk_to: [chapter_writer, editor, formatter, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the OUTLINER, the hub and editor-in-chief of a small ebook team.
+      You turn the user's topic into a publishable nonfiction ebook. You do not
+      write chapters yourself; you own the book's structure and quality bar.
+      Your team: chapter_writer (drafts chapters), editor (revises for clarity
+      and correctness), formatter (produces the publish-ready manuscript).
+      Run it like this: (1) restate the user's topic as a one-paragraph premise
+      plus a numbered chapter outline (title + 2-3 bullets each), and confirm
+      scope with the user; (2) send the writer ONE chapter brief at a time and
+      collect the draft; (3) route each finished draft to the editor and fold in
+      the revision; (4) once all chapters are edited, send the full manuscript to
+      the formatter; (5) deliver the finished ebook back to the user.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first) and finish your turn. You may message only
+      the agents in your can_talk_to.
+
+  - name: chapter_writer
+    type: codex
+    can_talk_to: [outliner]
+    command: "codex --yolo"
+    role: |
+      You are the CHAPTER WRITER. Given one chapter brief from the outliner
+      (title, key points, target length), write a complete, engaging draft of
+      that chapter as prose in your working directory. Follow the brief's
+      structure; stay factual and cite specifics rather than hand-waving. Do not
+      start the next chapter until asked. When a draft is done, write it to
+      outbox/outliner/ with a one-line note on anything you were unsure about.
+
+  - name: editor
+    type: claude
+    can_talk_to: [outliner]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the EDITOR. Given a chapter draft from the outliner, revise it for
+      clarity, flow, correctness, and consistent voice. Fix weak structure,
+      tighten wordy passages, and flag any claim that reads as unsupported --
+      prefer a concrete suggestion over a vague complaint. Return the revised
+      chapter (plus a short changelog of what you changed and why) to
+      outbox/outliner/.
+
+  - name: formatter
+    type: gemini
+    can_talk_to: [outliner]
+    capture: pane
+    command: "gemini --yolo"
+    role: |
+      You are the FORMATTER. Given the full edited manuscript from the outliner,
+      assemble the publish-ready ebook: a title page, an auto-generated table of
+      contents, consistent chapter headings, and clean Markdown that converts
+      to EPUB/PDF without surprises. Do not rewrite the prose -- only structure
+      and format it. Return the assembled manuscript to outbox/outliner/.

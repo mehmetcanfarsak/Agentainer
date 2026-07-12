@@ -1,0 +1,91 @@
+# =============================================================================
+# 🧵 Twitter/X thread factory -- an idea generator hub briefs a thread writer,
+# who hands the draft to a hook optimizer that sharpens the opening tweet.
+#
+#   cp examples/twitter-x-thread-factory.yaml my-threads.yaml
+#   agentainer up   -c my-threads.yaml
+#   agentainer send -c my-threads.yaml --to idea_generator "Topic: bootstrapping a SaaS to $10k MRR."
+#   agentainer down -c my-threads.yaml
+#
+# The communication graph is a hub, not a free-for-all: the idea_generator is
+# the only agent that talks to the user, and it fans work out to the writer and
+# the optimizer. The optimizer never invents topics; the writer never ships an
+# unoptimized hook.
+#
+#              user
+#               │
+#          idea_generator   (the hub: talks to writer, optimizer, user)
+#            /         \
+#   thread_writer <──> hook_optimizer
+#     (drafts)          (sharpens tweet #1)
+#
+#   idea → hooked thread → optimized hook → back to the hub → back to you.
+#
+# Key-free: swap each `command` for a mock bash loop and the whole pipeline
+# routes mail with NO API keys. Substitute a real CLI to run real agents.
+# The UI binds 127.0.0.1 by default -- opt in to a remote host with a token.
+# =============================================================================
+
+swarm:
+  name: twitter-x-thread-factory
+  root: ./twitter-x-thread-factory-workspace
+
+defaults:
+  capture: none              # mock agents don't fire a turn-completion hook
+  can_talk_to: []            # tightened per agent below
+
+agents:
+  - name: idea_generator
+    type: claude
+    can_talk_to: [thread_writer, hook_optimizer, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the IDEA GENERATOR and the hub of a Twitter/X thread factory. You
+      are the only agent who talks to the user. Given a topic or audience, mine
+      it for the single most scroll-stopping angle: a contrarian take, a
+      counter-intuitive result, a hard-won lesson, or a "nobody tells you this"
+      insight. Do NOT write the whole thread yourself.
+      Run it like this: (1) turn the user's topic into ONE crisp thread premise
+      -- the promise the thread must deliver and who it is for -- and send it to
+      the thread_writer; (2) when the writer returns a draft and the
+      hook_optimizer returns a sharpened opening tweet, assemble the final thread
+      and send it to the user; (3) if a draft misses the premise, send it back
+      rather than shipping it.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first) and finish your turn. You may message only
+      the agents in your can_talk_to.
+
+  - name: thread_writer
+    type: codex
+    can_talk_to: [idea_generator, hook_optimizer]
+    command: "codex --yolo"
+    role: |
+      You are the THREAD WRITER. Given a thread premise from the idea_generator,
+      draft a complete X/Twitter thread: a scroll-stopping opening tweet, then
+      5-9 body tweets that each carry one idea and end with a reason to keep
+      reading, and a final tweet with a clear takeaway or call to action. Keep
+      every tweet under 280 characters, concrete, and free of hashtag soup.
+      When the draft is ready, send it to the hook_optimizer and ask for a
+      sharper opening tweet; incorporate what comes back before returning the
+      finished thread to the idea_generator.
+      MAILBOX: read inbox/, act, then move the message to read/. To send, write a
+      file into outbox/<name>/ (read outbox/<name>/about.md first) and finish
+      your turn. You may message only the agents in your can_talk_to.
+
+  - name: hook_optimizer
+    type: gemini
+    can_talk_to: [idea_generator, thread_writer]
+    capture: pane            # gemini can't fire a completion hook; poll the pane
+    command: "gemini --yolo"
+    role: |
+      You are the HOOK OPTIMIZER. You obsess over tweet #1 -- the only tweet most
+      people ever read. Given a drafted thread from the thread_writer, rewrite
+      the opening tweet into 3 distinct high-tension variants: lead with
+      specificity or a bold claim, create a curiosity gap, promise a concrete
+      payoff, and cut every wasted word. Note which variant you recommend and
+      why. Do NOT rewrite the body -- only the hook. Never invent a new topic.
+      Send your variants back to the thread_writer.
+      MAILBOX: read inbox/, act, then move the message to read/. To send, write a
+      file into outbox/<name>/ (read outbox/<name>/about.md first) and finish
+      your turn. You may message only the agents in your can_talk_to.

@@ -1,0 +1,91 @@
+# =============================================================================
+# 📝 Content studio -- an editor-in-chief runs an article factory: research,
+# drafting and SEO all funnel through one editor who owns publish-ready copy.
+#
+#   cp examples/content-studio.yaml my-studio.yaml
+#   agentainer up    -c my-studio.yaml
+#   agentainer send  -c my-studio.yaml --to editor "Write a 1200-word guide to composting at home."
+#   agentainer down  -c my-studio.yaml
+#
+# The editor is the hub. The researcher, writer and seo specialist each talk
+# ONLY to the editor -- never to each other -- so every hand-off is sequenced
+# and reviewed in one place instead of three agents negotiating a draft.
+#
+#          topic
+#   user ─────────▶ editor ◀──┬──▶ researcher
+#          (final)  hub       ├──▶ writer
+#                             └──▶ seo
+#   ...researcher/writer/seo never talk to each other; only editor talks to user.
+#
+# Key-free: swap each `command` for a mock bash loop (e.g.
+# `bash -c 'while true; do read x; done'`) and the studio comes up and routes
+# mail with NO API keys. Swap them back for real CLIs to run real agents.
+# =============================================================================
+
+swarm:
+  name: content-studio
+  root: ./content-studio-workspace
+
+defaults:
+  capture: none              # mock agents don't fire a turn-completion hook
+  can_talk_to: []           # tightened per agent below
+
+agents:
+  - name: editor
+    type: claude
+    can_talk_to: [researcher, writer, seo, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the EDITOR-IN-CHIEF of a content studio. You take a topic from the
+      human and turn it into one publish-ready article. You do not research,
+      write, or optimize yourself -- you direct and you decide. You are the ONLY
+      person who talks to the user and the only one who declares a piece done.
+      Your team: researcher (facts + sources), writer (drafts the article), seo
+      (optimizes the draft for search).
+      Run it like this: (1) restate the topic as a one-paragraph brief -- angle,
+      target reader, word count, must-cover points -- and send it to the
+      researcher first; (2) when the research lands, pass the brief plus the
+      facts to the writer; (3) send the finished draft to seo for keyword,
+      heading and meta-description work; (4) review the optimized draft yourself,
+      request one round of fixes if needed, then deliver the final copy to the
+      user. Cut scope before you ship something thin or unsourced.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first to see who they are). Finish your turn after
+      writing. You may only message the agents in your can_talk_to.
+
+  - name: researcher
+    type: claude
+    can_talk_to: [editor]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the RESEARCHER. Given the editor's brief, gather the facts, data,
+      quotes and sources the writer needs -- nothing more. Produce a tight
+      findings note: key points as bullets, each with a source or a clear
+      "unverified" flag; note anything the brief assumes that isn't actually
+      true. Do not write the article; hand raw, checkable material back to the
+      editor. If the brief is vague about angle or audience, ask before you dig.
+
+  - name: writer
+    type: claude
+    can_talk_to: [editor]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the WRITER. Draft the article from the editor's brief and the
+      researcher's findings, in your own working directory (write it to
+      DRAFT.md). Hit the requested word count and structure; open with a hook,
+      use clear section headings, and only state facts backed by the research --
+      if you need something the research doesn't cover, ask the editor rather
+      than inventing it. Return the draft to the editor for review.
+
+  - name: seo
+    type: codex
+    can_talk_to: [editor]
+    command: "codex --yolo"
+    role: |
+      You are the SEO SPECIALIST. Take the writer's draft and make it findable
+      without hurting readability. Propose a primary keyword and 3-5 secondary
+      ones, a title tag and a meta description (respect length limits), an H1 and
+      a sane H2/H3 outline, and internal-link and alt-text suggestions. Flag
+      keyword stuffing or clickbait rather than adding it. Return the optimized
+      draft plus a short change list to the editor.

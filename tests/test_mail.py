@@ -210,15 +210,37 @@ def test_release_next_releases_oldest(tmp_runtime):
     alice = make_agent(tmp_runtime, "alice", [])
     cfg = build_cfg(tmp_runtime, [alice])
     mailmod.init_mailboxes(cfg)
-    _queue(cfg, "alice", "m-second.txt", "two")
-    _queue(cfg, "alice", "m-first.txt", "one")  # older name -> released first
+    # Enqueue in a known order; the queue file NAMES deliberately sort the other
+    # way (m-zzz enqueued first, m-aaa second) to prove release is by enqueue
+    # time, not by filename.
+    mailmod.enqueue(cfg, "alice", "one", "m-zzz")
+    mailmod.enqueue(cfg, "alice", "two", "m-aaa")
     assert mailmod.release_next(cfg, "alice") is True
     inbox = cfg.mail_paths(alice).inbox
-    assert (inbox / "m-first.txt").is_file()
-    assert not (inbox / "m-second.txt").exists()
+    assert (inbox / "m-zzz.txt").is_file()      # first ENQUEUED, despite z > a
+    assert not (inbox / "m-aaa.txt").exists()
     assert "delivered" in [e["kind"] for e in read_jsonl(cfg.log_dir / "alice.jsonl")]
     pres = mailmod._get_presentations(cfg, "alice")
-    assert pres == {"msg_id": "m-first.txt", "count": 1}
+    assert pres == {"msg_id": "m-zzz.txt", "count": 1}
+
+
+def test_release_next_fifo_not_starved_by_id_order(tmp_runtime):
+    """Regression: a message whose random id sorts LATE must not be starved by
+    later-arriving messages whose ids sort earlier (the reported 'stuck waiting'
+    bug). Release order is strictly the order messages were enqueued."""
+    alice = make_agent(tmp_runtime, "alice", [])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    # The "stuck" user message has a high-sorting id and is enqueued FIRST.
+    mailmod.enqueue(cfg, "alice", "please double-check the report", "m-e31eabc3")
+    # Newer messages with lower-sorting ids arrive after.
+    for mid in ("m-9426b62e", "m-06eb94b5", "m-cd9b20b0"):
+        mailmod.enqueue(cfg, "alice", f"later {mid}", mid)
+    order = [f.name for f in mailmod.queued_files(cfg, "alice")]
+    assert order[0] == "m-e31eabc3.txt", order
+    inbox = cfg.mail_paths(alice).inbox
+    assert mailmod.release_next(cfg, "alice") is True
+    assert (inbox / "m-e31eabc3.txt").is_file()  # the old message goes first
 
 
 # --------------------------------------------------------------------------
@@ -250,6 +272,40 @@ def test_nudge_builds_text_and_pastes(tmp_runtime):
 
     with mock.patch.object(tmuxmod, "paste_into", return_value=False) as p:
         assert mailmod.nudge(cfg, "alice") is False
+
+
+def test_nudge_marks_turn_started_so_long_turns_are_not_seen_as_idle(tmp_runtime):
+    """Regression: a delivered+nudged message must register the agent as BUSY.
+
+    Before, only the first prompt marked a turn started, so after the first turn
+    every nudged message left delivered == completed -> busy_info reported IDLE
+    while the agent was mid-turn. The supervisor then bumped the inbox message's
+    presentation count each tick and auto-archived it ~75s in -- corrupting any
+    turn longer than that."""
+    alice = make_agent(tmp_runtime, "alice", ["user"])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    # First turn completed -> idle.
+    turnmod.mark_turn_started(cfg, "alice", "user")
+    turnmod.mark_turn_finished(cfg, "alice")
+    assert turnmod.busy_info(cfg, alice) is None
+
+    # A new message is delivered and the agent is poked.
+    mailmod.enqueue(cfg, "alice", mailmod.stamp_message("do X", "bob", "alice", "m-x"), "m-x")
+    with mock.patch.object(tmuxmod, "paste_into", return_value=True):
+        assert mailmod.release_next(cfg, "alice") is True
+        assert mailmod.nudge(cfg, "alice") is True
+
+    # Now correctly BUSY (mid-turn), with the task's origin recorded.
+    state = turnmod.busy_info(cfg, alice)
+    assert state is not None
+    assert state["by"] == "bob"
+
+    # A failed paste must NOT mark a turn started (no false busy).
+    turnmod.mark_turn_finished(cfg, "alice")
+    with mock.patch.object(tmuxmod, "paste_into", return_value=False):
+        assert mailmod.nudge(cfg, "alice") is False
+    assert turnmod.busy_info(cfg, alice) is None
 
 
 # --------------------------------------------------------------------------
@@ -505,6 +561,36 @@ def test_process_read_folder_auto_archive(tmp_runtime):
     assert not (mp.inbox / "m-arc1.txt").exists()
 
 
+def test_process_read_folder_auto_archive_leaves_release_to_caller(tmp_runtime):
+    """After auto-archiving an over-presented message, process_read_folder must
+    only EMPTY the inbox -- it must NOT release the next queued message itself,
+    because that release would be un-nudged. Releasing here (the old behaviour)
+    let the next message climb to its own archive threshold unread, silently
+    draining the whole queue. The caller pairs release_next with a nudge."""
+    bob = make_agent(tmp_runtime, "bob", [])
+    cfg = build_cfg(tmp_runtime, [bob])
+    mailmod.init_mailboxes(cfg)
+    mp = cfg.mail_paths(bob)
+    mp.inbox.mkdir(parents=True, exist_ok=True)
+    (mp.inbox / "m-old.txt").write_text(mailmod.stamp_message("old", "alice", "bob", "m-old"))
+    mailmod._set_presentations(cfg, "bob", "m-old.txt", mailmod.AUTO_ARCHIVE_PRESENTATIONS)
+    # A next message is waiting in the queue.
+    mailmod.enqueue(cfg, "bob", "next one", "m-next")
+
+    mailmod.process_read_folder(cfg, "bob")
+
+    # Old message archived out of the inbox...
+    assert not (mp.inbox / "m-old.txt").exists()
+    assert (cfg.runtime / "archive" / "bob" / "m-old.txt").is_file()
+    # ...and the inbox is left EMPTY -- the next message is still queued, waiting
+    # for the caller to release + nudge it (not silently promoted here).
+    assert not any(mp.inbox.iterdir())
+    assert (cfg.queue_dir / "bob" / "m-next.txt").is_file()
+    # The caller's release then delivers it (and would nudge).
+    assert mailmod.release_next(cfg, "bob") is True
+    assert (mp.inbox / "m-next.txt").is_file()
+
+
 def test_process_read_folder_auto_archive_skips_handled(tmp_runtime):
     bob = make_agent(tmp_runtime, "bob", [])
     cfg = build_cfg(tmp_runtime, [bob])
@@ -513,12 +599,13 @@ def test_process_read_folder_auto_archive_skips_handled(tmp_runtime):
     mp.inbox.mkdir(parents=True, exist_ok=True)
     (mp.inbox / "m-arc2.txt").write_text(mailmod.stamp_message("old", "alice", "bob", "m-arc2"))
     mailmod._set_presentations(cfg, "bob", "m-arc2.txt", mailmod.AUTO_ARCHIVE_PRESENTATIONS)
-    # already handled -> recorded in processed
-    mailmod._save_run_json(cfg, "bob.read.json", {"processed": ["m-arc2.txt"]})
+    # already handled -> recorded in processed as the message CONTENT id (the
+    # form process_read_folder actually stores), NOT the "m-arc2.txt" filename.
+    mailmod._save_run_json(cfg, "bob.read.json", {"processed": ["m-arc2"]})
 
     n = mailmod.process_read_folder(cfg, "bob")
     assert n == 0
-    # NOT archived
+    # NOT archived -- the handled-message guard recognises the content id
     assert (mp.inbox / "m-arc2.txt").is_file()
 
 
@@ -571,6 +658,7 @@ def test_maybe_ping_success(tmp_runtime):
     mailmod._save_run_json(cfg, "alice.ping.json", {"last_ping": 0.0})
     with mock.patch.object(mailmod, "time") as mtime:
         mtime.time.return_value = 1000.0
+        mtime.time_ns.return_value = 1_000_000_000_000_000_000  # enqueue's mtime stamp
         assert mailmod.maybe_ping(cfg, "alice") is True
     queued = list((cfg.queue_dir / "alice").iterdir())
     assert len(queued) == 1

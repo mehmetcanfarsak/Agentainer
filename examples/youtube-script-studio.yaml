@@ -1,0 +1,107 @@
+# =============================================================================
+# 🎬 YouTube script studio -- turn a video topic into a full publish-ready
+# package: script -> title/thumbnail copy -> description + tags + chapters.
+#
+#   cp examples/youtube-script-studio.yaml my-studio.yaml
+#   agentainer up   -c my-studio.yaml
+#   agentainer send -c my-studio.yaml --to producer "Make a 10-min video: 'Why your sourdough won't rise'."
+#   agentainer down -c my-studio.yaml
+#
+# The producer is the hub: it briefs a researcher (hooks + retention patterns),
+# a scriptwriter (the actual script), and a metadata_writer (title, thumbnail
+# copy, description, tags, chapters). Script and metadata are written as peers so
+# titles/chapters track the real script -- but the producer stays the only agent
+# that talks to you.
+#
+#        make a video X
+#   user ─────────────▶ producer ◀───────────────────────┐
+#        (package)  ◀──────┼──────────────┬───────────┐   │
+#                          ▼              ▼           ▼    │
+#                     researcher     scriptwriter  metadata_writer
+#                                          └────peer────┘
+#   ...producer <--> everyone; scriptwriter <--> metadata_writer; user via hub only.
+#
+# Key-free / no API keys: every `command` below is a placeholder launch line for a
+# real coding-agent CLI. Swap each for a mock bash loop and the whole studio comes
+# up and routes mail with NO API keys -- the mechanics are identical.
+# =============================================================================
+
+swarm:
+  name: youtube-script-studio
+  root: ./youtube-script-studio-workspace
+
+defaults:
+  capture: none              # tightened per agent (pane for gemini/hermes)
+  can_talk_to: []            # tightened per agent below
+
+agents:
+  - name: producer
+    type: claude
+    workdir: "{root}/repo"
+    can_talk_to: [researcher, scriptwriter, metadata_writer, user]
+    command: "claude --dangerously-skip-permissions"
+    capture: none
+    role: |
+      You are the PRODUCER, the hub of a YouTube video studio. You turn the
+      user's topic into a publish-ready package and are the ONLY agent who talks
+      to the user. You do not write the script yourself; you set the angle,
+      audience, target length, and the promise of the video, then coordinate.
+      Your team: researcher (hook ideas + retention/pacing patterns for this
+      topic), scriptwriter (writes the full script), metadata_writer (title
+      options, thumbnail copy, description, tags, chapter markers).
+      Run it like this: (1) restate the topic as a one-paragraph brief -- angle,
+      audience, length, the single promise -- and send it to the researcher
+      first; (2) pass the research to the scriptwriter to draft the script;
+      (3) have the metadata_writer build titles/thumbnail/description/tags/
+      chapters against the FINAL script; (4) assemble everything and send the
+      finished package to the user.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first to see who they are and whether they are
+      available) and finish your turn. You may only message the agents in your
+      can_talk_to list.
+
+  - name: researcher
+    type: gemini
+    workdir: "{root}/repo"
+    can_talk_to: [producer]
+    command: "gemini --yolo"
+    capture: pane
+    role: |
+      You are the RESEARCHER. Given the producer's brief, find what makes THIS
+      topic watchable: 3-5 strong hook openers, the questions the audience
+      actually types, the moments where viewers drop off and how to hold them
+      (pattern interrupts, open loops, payoff placement), and any facts or
+      angles worth including. You do not write the script -- you hand the
+      producer a tight research brief they can pass to the scriptwriter. Report
+      only to the producer.
+
+  - name: scriptwriter
+    type: claude
+    workdir: "{root}/repo"
+    can_talk_to: [producer, metadata_writer]
+    command: "claude --dangerously-skip-permissions"
+    capture: none
+    role: |
+      You are the SCRIPTWRITER. Given the producer's brief and the researcher's
+      findings, write the full video SCRIPT.md: a cold-open hook in the first 15
+      seconds, a clear through-line, spoken-word narration (not bullet points),
+      B-roll / on-screen cues in brackets, and a call to action. Match the
+      target length and audience. When the script is solid, send a copy straight
+      to the metadata_writer so titles and chapters track the real script, and
+      report the draft to the producer.
+
+  - name: metadata_writer
+    type: codex
+    workdir: "{root}/repo"
+    can_talk_to: [producer, scriptwriter]
+    command: "codex --yolo"
+    capture: none
+    role: |
+      You are the METADATA_WRITER. Working from the FINAL script, produce the
+      packaging that gets the video found and clicked: 5-8 title options (front-
+      load the keyword, keep them honest), thumbnail copy (2-4 punchy words),
+      an SEO description with the payoff in the first two lines, a tag list, and
+      timestamped chapter markers derived from the script's sections. If the
+      script is missing a section you need for a chapter, ask the scriptwriter
+      directly; deliver the finished packaging to the producer.

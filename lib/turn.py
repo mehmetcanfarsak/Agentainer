@@ -79,12 +79,20 @@ def busy_info(cfg: SwarmConfig, agent: Agent) -> dict | None:
 
 
 def mark_turn_started(cfg: SwarmConfig, agent: str, sender: str) -> None:
-    """Record that another message (from *sender*) was just delivered to *agent*."""
-    state = turn_state(cfg, agent)
-    state["delivered"] = state.get("delivered", 0) + 1
-    state["since"] = time.time()
-    state["by"] = sender
-    write_turn_state(cfg, agent, state)
+    """Record that another message (from *sender*) was just delivered to *agent*.
+
+    Locked with the same ``turn.lock`` as :func:`mark_turn_finished`: this is a
+    read-modify-write of ``delivered``, and the completion hook (a separate
+    process) clamps ``completed`` concurrently. Without the shared lock the two
+    can interleave and lose an update, leaving an agent wedged "busy" or -- worse
+    -- looking idle while a message is still in flight.
+    """
+    with file_lock(cfg, agent, "turn.lock"):
+        state = turn_state(cfg, agent)
+        state["delivered"] = state.get("delivered", 0) + 1
+        state["since"] = time.time()
+        state["by"] = sender
+        write_turn_state(cfg, agent, state)
 
 
 def mark_turn_finished(cfg: SwarmConfig, agent: str) -> None:

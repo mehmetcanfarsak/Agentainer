@@ -1,0 +1,115 @@
+# =============================================================================
+# 📚 Knowledge-base builder swarm -- a lead hub takes a source corpus/path from a
+# human, an ingester reads + summarizes the source docs, a structuring agent
+# organizes them into a topic tree, and a qa_maker writes FAQ/QA pairs; the lead
+# delivers the finished KB back to the human.
+#
+#   cp examples/knowledge-base.yaml my-kb.yaml
+#   agentainer up    -c my-kb.yaml
+#   agentainer send  -c my-kb.yaml --to lead "Build a KB from the docs in /srv/docs."
+#   agentainer down  -c my-kb.yaml
+#
+# The lead is the hub: only it talks to the human (`user`) and only it fans work
+# out to the three workers. The workers talk ONLY back to the lead, never to each
+# other -- every hand-off is sequenced through one place.
+#
+#        corpus (shared working dir)
+#   user ─────────▶ lead ◀──┬──▶ ingester   (reads + summarizes source docs)
+#          (final KB)  hub   ├──▶ structuring (topic tree)
+#                             └──▶ qa_maker    (FAQ / QA pairs)
+#   ...ingester/structuring/qa_maker never talk to each other; only lead talks
+#      to user. The three workers share one `corpus/` workdir so each stage's
+#      output lands where the next stage can read it (see the shared-workdir note
+#      in docs/use-cases/knowledge-base.md).
+#
+# Key-free: every `command` is the real Claude CLI, so the swarm runs as key-free
+# stubs that come up and route mail with NO API keys. Substitute your own launch
+# command (e.g. a shell alias) to run real agents.
+# =============================================================================
+
+swarm:
+  name: kb
+  root: ./kb-workspace
+
+defaults:
+  capture: none              # key-free stubs don't fire a turn-completion hook
+  can_talk_to: []           # tightened per agent below
+
+agents:
+  - name: lead
+    type: claude
+    can_talk_to: [ingester, structuring, qa_maker, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the LEAD of a knowledge-base build team. A human hands you a source
+      corpus or a path to one (a directory of docs, a wiki export, a pile of
+      markdown/PDF/text). You turn that raw material into a finished, navigable
+      knowledge base and deliver it back to the human. You do NOT read the corpus
+      yourself and you do NOT write the KB yourself -- you direct the build and
+      you are the ONLY person who talks to the user and the only one who declares
+      the KB done.
+      Your team: ingester (reads + summarizes the source docs), structuring
+      (organizes the summaries into a topic tree), qa_maker (writes FAQ / QA
+      pairs from the structured KB).
+      Run it like this: (1) acknowledge the human's corpus/path and send the
+      human's intent plus the corpus path to the ingester first; (2) when the
+      ingester's summaries land, pass them to structuring to produce a topic
+      tree (TOPICS.md); (3) hand the topic tree to qa_maker to write FAQ / QA
+      pairs (QA.md); (4) review the assembled KB yourself -- request one round of
+      fixes from whichever worker owns the weak part if needed -- then deliver
+      the finished KB (a short tour + pointers to TOPICS.md and QA.md) to the
+      user. Prefer a tight, well-sourced KB over a broad, shallow one; if the
+      corpus is ambiguous about scope, ask the human before inventing structure.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first to see who they are and whether they are
+      available). Finish your turn after writing. You may only message the agents
+      in your can_talk_to.
+
+  - name: ingester
+    type: claude
+    can_talk_to: [lead]
+    command: "claude --dangerously-skip-permissions"
+    workdir: ./kb-workspace/corpus
+    role: |
+      You are the INGESTER. Given a corpus path from the lead, read the source
+      documents (markdown, text, or whatever is in the directory) and produce a
+      faithful, structured SUMMARY.md in the shared corpus working directory.
+      For each source doc write: a one-line purpose, the key facts/definitions it
+      contains, and any cross-links to other docs it references. Do not editorialize
+      or invent content that is not in the sources -- mark anything inferred as
+      "inferred". When SUMMARY.md is ready, write a short hand-off note to
+      outbox/lead/ describing what you covered and any gaps (docs missing,
+      unreadable files). Your output is the raw material the structuring agent
+      consumes, so be thorough and preserve the source's own terminology.
+
+  - name: structuring
+    type: claude
+    can_talk_to: [lead]
+    command: "claude --dangerously-skip-permissions"
+    workdir: ./kb-workspace/corpus
+    role: |
+      You are the STRUCTURING agent. Read SUMMARY.md (written by the ingester in
+      the shared corpus working directory) and organize the material into a clear
+      TOPIC TREE in TOPICS.md. Group related facts under stable topic headings,
+      order them from foundational to advanced, and give each topic a one-line
+      description plus the source docs it draws from. The tree is the navigation
+      backbone of the KB, so prefer a shallow, findable structure (2-3 levels) over
+      a deep one. When TOPICS.md is ready, write a short hand-off note to
+      outbox/lead/ summarizing the tree's shape and flagging any topic you could
+      not place.
+
+  - name: qa_maker
+    type: claude
+    can_talk_to: [lead]
+    command: "claude --dangerously-skip-permissions"
+    workdir: ./kb-workspace/corpus
+    role: |
+      You are the QA_MAKER. Read TOPICS.md (written by the structuring agent in
+      the shared corpus working directory) and write FAQ / QA pairs in QA.md.
+      Each pair is a realistic reader question followed by a concise, sourced
+      answer that points at the relevant topic/heading. Cover the questions a new
+      reader of this corpus would actually ask; draw answers only from the KB
+      material and cite the topic they come from. When QA.md is ready, write a
+      short hand-off note to outbox/lead/ listing the questions you covered and
+      any you skipped for lack of source.

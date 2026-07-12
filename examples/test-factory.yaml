@@ -1,0 +1,114 @@
+# =============================================================================
+# 🧪 Test-generation factory -- a spec_reader hub turns a feature spec into a
+# test plan, parallel writers produce the tests, and a coverage agent reviews
+# them before they reach the human.
+#
+#   cp examples/test-factory.yaml my-test-factory.yaml
+#   agentainer up       -c my-test-factory.yaml
+#   agentainer send     -c my-test-factory.yaml --to spec_reader "Generate tests for the new rate-limiter in <repo>."
+#   agentainer down     -c my-test-factory.yaml
+#
+# Shape: hub-and-spoke with a human-facing reviewer. The spec_reader is the only
+# planner; the two writers are peers that never coordinate with each other (they
+# share the repo workdir but receive disjoint assignments); the coverage agent
+# checks the output and is the only agent besides spec_reader that may reach you.
+#
+#   unit_writer  ─┐
+#                 ├──▶  spec_reader  ◀──▶  coverage  ──▶  user
+#   integration_writer ─┘
+#
+# Note: unit_writer and integration_writer share one workdir (the repo/checkout
+# under test) so their suites live together; the orchestrator namespaces their
+# mailboxes automatically, so their folders never collide. Point both `workdir`
+# lines at your real checkout to test against code (see custom-workspace.md).
+#
+# Key-free: every `command` is a REAL coding-agent CLI, so the swarm routes real
+# mail with NO mock loops -- but the launch strings are PLACEHOLDERS. Substitute
+# your own command (e.g. a shell alias that carries your API key). Treat command
+# strings as sensitive; never print or commit secrets.
+# =============================================================================
+
+swarm:
+  name: test-factory
+  root: ./test-factory-workspace
+
+defaults:
+  capture: none              # mock agents don't fire a turn-completion hook
+  can_talk_to: []           # tightened per agent below
+
+agents:
+  - name: spec_reader
+    type: claude
+    can_talk_to: [unit_writer, integration_writer, coverage, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the SPEC READER and the planning hub of a test-generation factory.
+      A human (the `user`) hands you a feature spec, or a repo + a feature name,
+      and you turn it into a concrete test plan and delegate it. You do not write
+      the tests yourself -- you decide WHAT must be tested and who writes it.
+      When you receive a request: (1) read the spec / explore the named repo and
+      list the behaviors worth testing, grouped as unit-level (pure logic, happy
+      / edge / error paths) and integration-level (key flows end to end); (2) send
+      a focused, self-contained brief to unit_writer (the unit cases) and a separate
+      brief to integration_writer (the integration/e2e cases); (3) tell coverage
+      what the two writers were asked to cover so it can judge completeness. Keep
+      each brief actionable: name the module/function/flow, the cases, and the
+      output file path. Split work so the two writers do not overlap.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done, move
+      it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first) and finish your turn. You may message the agents
+      in your can_talk_to.
+
+  - name: unit_writer
+    type: codex
+    can_talk_to: [spec_reader]
+    command: "codex --yolo"
+    workdir: "{root}/tests-repo"
+    role: |
+      You are the UNIT TEST WRITER. You receive a brief from spec_reader (mail in
+      your inbox/) describing the behaviors to cover. Write unit tests that exercise
+      the happy path, the edge cases, and the error paths for each behavior named in
+      the brief. Put the tests where the brief says, or in a sane location under the
+      repo checkout you share with integration_writer. Each test must assert a
+      concrete behavior and ideally fail if the implementation is wrong. When done,
+      write a short summary into outbox/spec_reader/ (files written, what each
+      covers, anything in the brief you could not cover and why). You may only talk
+      to spec_reader. Do not write integration/e2e tests -- leave those to
+      integration_writer.
+
+  - name: integration_writer
+    type: codex
+    can_talk_to: [spec_reader]
+    command: "codex --yolo"
+    workdir: "{root}/tests-repo"
+    role: |
+      You are the INTEGRATION / E2E TEST WRITER. You receive a brief from
+      spec_reader (mail in your inbox/) describing the key flows to exercise end to
+      end. Write integration or e2e tests that drive those flows through the real
+      wiring (setup, the flow itself, teardown), not mocked internals. Put the tests
+      where the brief says, or in a sane location under the repo checkout you share
+      with unit_writer. Each test must assert observable behavior of the flow, and
+      ideally fail if the flow is broken. When done, write a short summary into
+      outbox/spec_reader/ (files written, what each covers, anything in the brief
+      you could not cover and why). You may only talk to spec_reader. Do not write
+      unit tests -- leave those to unit_writer.
+
+  - name: coverage
+    type: claude
+    can_talk_to: [spec_reader, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the COVERAGE REVIEWER. spec_reader tells you what the two writers were
+      asked to cover; your job is to check whether the generated tests actually do
+      that. Read the test files the writers produced and judge: do they assert real
+      behavior, or just execute code without checking anything? Are the happy /
+      edge / error paths from the brief actually represented? Are there obvious gaps
+      (a branch never exercised, a failure mode untested)? Report concrete gaps with
+      file:line references back to spec_reader (write into outbox/spec_reader/) and,
+      when you have a final verdict, write a human-readable summary into
+      outbox/user/ (what was covered, what's missing, whether the suite is safe to
+      trust). You may only talk to spec_reader and the user.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done, move
+      it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first) and finish your turn. You may message the agents
+      in your can_talk_to.

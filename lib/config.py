@@ -158,11 +158,14 @@ class SwarmConfig:
     warnings: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        # Set of resolved workdirs shared by 2+ agents. Computed up front so
-        # `mail_paths` can namespace mailbox folders to avoid collisions.
+        # Set of resolved mail_dirs shared by 2+ agents. Computed up front so
+        # `mail_paths` can namespace mailbox folders to avoid collisions. Keyed on
+        # mail_dir (where the four folders actually live), NOT workdir: two agents
+        # can point a shared `mail_dir` at one place while keeping distinct
+        # workdirs, and without this they would silently share one `inbox/`.
         counts: dict[Path, int] = {}
         for agent in self.agents:
-            key = agent.workdir.resolve()
+            key = agent.mail_dir.resolve()
             counts[key] = counts.get(key, 0) + 1
         self._shared: set[Path] = {d for d, n in counts.items() if n > 1}
 
@@ -203,13 +206,14 @@ class SwarmConfig:
     def mail_paths(self, agent: Agent) -> SimpleNamespace:
         """Resolve the five mailbox folders for *agent* (plan §16).
 
-        Base is ``agent.mail_dir``. When the agent's workdir is shared by more
-        than one agent, every folder is prefixed with ``<name>-`` to avoid
-        collisions. The model never sees this -- every nudge/first-prompt is
-        handed the exact computed paths.
+        Base is ``agent.mail_dir``. When that mail_dir is shared by more than one
+        agent (whether because they share a workdir and inherit the default, or
+        because they explicitly point at the same directory), every folder is
+        prefixed with ``<name>-`` to avoid collisions. The model never sees this
+        -- every nudge/first-prompt is handed the exact computed paths.
         """
         base = agent.mail_dir
-        prefix = agent.name + "-" if agent.workdir.resolve() in self._shared else ""
+        prefix = agent.name + "-" if agent.mail_dir.resolve() in self._shared else ""
         return SimpleNamespace(
             inbox=base / (prefix + "inbox"),
             outbox=base / (prefix + "outbox"),
@@ -332,8 +336,11 @@ def load(path: str | os.PathLike) -> SwarmConfig:
     create_workdirs = _as_bool(swarm.get("create_workdirs"), True, "swarm.create_workdirs")
 
     raw_agents = data.get("agents")
-    if not raw_agents:
-        raise ConfigError("`agents:` must contain at least one agent")
+    if raw_agents is None:
+        # An empty swarm is valid: `agentainer up` brings up just the orchestrator
+        # + UI, and the operator seeds agents from a template / the Settings editor
+        # (P4). This also lets the UI remove the last agent without wedging.
+        raw_agents = []
     if not isinstance(raw_agents, list):
         raise ConfigError("`agents:` must be a list")
 
@@ -533,7 +540,17 @@ def load(path: str | os.PathLike) -> SwarmConfig:
     # addressed by an agent; everything else must name a real agent.
     for agent in agents:
         if "*" in agent.can_talk_to:
-            agent.can_talk_to = [n for n in all_names if n != agent.name]
+            # `*` means "every other agent". Preserve any other entries listed
+            # alongside it (notably `user`, which `*` does not cover) instead of
+            # replacing the whole list -- dropping an explicit recipient would
+            # deny mail the config plainly granted.
+            expanded = [n for n in all_names if n != agent.name]
+            extras = [
+                p
+                for p in agent.can_talk_to
+                if p != "*" and p != agent.name and p not in expanded
+            ]
+            agent.can_talk_to = expanded + extras
         for peer in agent.can_talk_to:
             if peer == "system":
                 raise ConfigError(

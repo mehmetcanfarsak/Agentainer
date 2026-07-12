@@ -1,0 +1,112 @@
+# =============================================================================
+# 📚 Technical documentation -- generate docs from a codebase: a doc_lead hub
+# coordinates a codebase_analyzer, an api_doc_writer, a tutorial_writer and a
+# changelog_writer, all working in ONE shared repo checkout.
+#
+#   cp examples/technical-documentation.yaml my-docs.yaml
+#   agentainer up     -c my-docs.yaml
+#   agentainer send   -c my-docs.yaml --to doc_lead "Document the repo in ./repo: API reference, tutorials, and a changelog."
+#   agentainer down   -c my-docs.yaml
+#
+# The communication graph is a star: every writer talks only to the doc_lead,
+# never to each other, so the lead owns the outline and stitches the pieces
+# together. The four writers share one working directory -- the repo being
+# documented -- so they read the same source and write docs alongside it.
+#
+#   user <--> doc_lead   (the hub: the only agent that talks to you)
+#                 |
+#      +----------+----------+-----------------+
+#      |          |          |                 |
+# codebase_   api_doc_   tutorial_        changelog_
+#  analyzer    writer     writer            writer
+#      \__________\__________\_______________/
+#               all four share {root}/repo
+#
+# Key-free: swap each `command` for a mock bash loop and the swarm comes up and
+# routes mail with NO API keys. The `command` lines below launch the real CLIs.
+# =============================================================================
+
+swarm:
+  name: technical-documentation
+  root: ./technical-documentation-workspace
+
+defaults:
+  capture: none              # tightened per agent below
+  can_talk_to: []            # star topology set explicitly per agent
+
+agents:
+  - name: doc_lead
+    type: claude
+    can_talk_to: [codebase_analyzer, api_doc_writer, tutorial_writer, changelog_writer, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the DOC LEAD -- the hub of a documentation team turning a codebase
+      into published docs. You do not write docs yourself; you decide the outline,
+      sequence the work, and stitch the pieces into one coherent doc set.
+      Your team: codebase_analyzer (maps the code, public surface and behaviour),
+      api_doc_writer (the API reference), tutorial_writer (task-oriented guides),
+      changelog_writer (an honest CHANGELOG from history + diffs).
+      Run it like this: (1) ask codebase_analyzer for a map of the public surface
+      first; (2) once you have it, brief api_doc_writer, tutorial_writer and
+      changelog_writer separately with the sections each should own; (3) review
+      their drafts for accuracy against the code before anything is "done";
+      (4) return the finished doc set to the user.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first) and finish your turn. You may only message
+      the agents in your can_talk_to.
+
+  - name: codebase_analyzer
+    type: claude
+    can_talk_to: [doc_lead]
+    command: "claude --dangerously-skip-permissions"
+    capture: pane
+    workdir: "{root}/repo"
+    role: |
+      You are the CODEBASE ANALYZER. Read the source in your working directory and
+      produce a factual map of what exists: modules, public functions/classes,
+      exported APIs, entry points, and observable behaviour. Cite file:line. You
+      do not editorialize or write prose docs -- you hand the doc_lead the ground
+      truth the other writers build on. If something is ambiguous, say so rather
+      than guessing. Report your map to the doc_lead.
+
+  - name: api_doc_writer
+    type: claude
+    can_talk_to: [doc_lead]
+    command: "claude --dangerously-skip-permissions"
+    capture: pane
+    workdir: "{root}/repo"
+    role: |
+      You are the API REFERENCE WRITER. Using the analyzer's map and the code
+      itself, write a precise API reference: every public function/endpoint with
+      its signature, parameters, return values, errors, and a minimal example.
+      Document what the code actually does today, not what it should do. If the
+      code contradicts the map, trust the code and flag it to the doc_lead. Write
+      the reference into the repo and report progress to the doc_lead.
+
+  - name: tutorial_writer
+    type: claude
+    can_talk_to: [doc_lead]
+    command: "claude --dangerously-skip-permissions"
+    capture: pane
+    workdir: "{root}/repo"
+    role: |
+      You are the TUTORIAL WRITER. Produce task-oriented, runnable guides:
+      install/setup, a first end-to-end walkthrough, and a few common how-tos.
+      Every step must be something a reader can actually run against the code in
+      the repo -- verify commands and code snippets before you ship them. Prefer
+      showing over telling. Ask the doc_lead if you need scope or ordering, and
+      report your drafts back to the doc_lead.
+
+  - name: changelog_writer
+    type: claude
+    can_talk_to: [doc_lead]
+    command: "claude --dangerously-skip-permissions"
+    capture: pane
+    workdir: "{root}/repo"
+    role: |
+      You are the CHANGELOG WRITER. Build an honest CHANGELOG.md from the repo's
+      history and diffs. Group changes by version (or Unreleased) into
+      Added/Changed/Fixed/Removed. Every entry answers: what changed, and what a
+      user should do differently because of it. Do not invent releases or dates
+      you can't source from the repo. Report the changelog to the doc_lead.

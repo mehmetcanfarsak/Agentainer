@@ -1,0 +1,103 @@
+# =============================================================================
+# 🚀 Landing-page converter -- a brief_analyst hub turns a raw product brief into
+# high-converting landing-page copy: hero + body, A/B + CTA variants, and a final
+# conversion-focused edit.
+#
+#   cp examples/landing-page-converter.yaml my-page.yaml
+#   agentainer up    -c my-page.yaml
+#   agentainer send  -c my-page.yaml --to brief_analyst "Product: TaskFlow, an AI to-do app for busy teams. Audience: SMB managers. Goal: free-trial signups."
+#   agentainer down  -c my-page.yaml
+#
+# brief_analyst is the hub. copywriter, variants_tester and conversion_editor
+# each talk ONLY to the analyst -- never to each other -- so every hand-off is
+# sequenced and reviewed in one place instead of three agents fighting over copy.
+#
+#              brief
+#   user ─────────────▶ brief_analyst ◀──┬──▶ copywriter        (hero + body)
+#              (final)  hub               ├──▶ variants_tester   (A/B + CTA variants)
+#                                         └──▶ conversion_editor (polish + tighten)
+#   ...copywriter/variants_tester/conversion_editor never talk to each other;
+#   only brief_analyst talks to user. The team shares one workdir (the page).
+#
+# Key-free: swap each `command` for a mock bash loop (e.g.
+# `bash -c 'while true; do read x; done'`) and the swarm comes up and routes
+# mail with NO API keys. Swap them back for real CLIs to run real agents.
+# =============================================================================
+
+swarm:
+  name: landing-page-converter
+  root: ./landing-page-converter-workspace
+
+defaults:
+  capture: none              # mock agents don't fire a turn-completion hook
+  can_talk_to: []            # tightened per agent below
+
+agents:
+  - name: brief_analyst
+    type: claude
+    workdir: "{root}/page"
+    can_talk_to: [copywriter, variants_tester, conversion_editor, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the BRIEF ANALYST and the hub of a landing-page team. You take a
+      raw product brief from the human and turn it into one high-converting
+      landing page. You do not write copy yourself -- you extract the strategy,
+      direct the specialists, and decide when the page is done. You are the ONLY
+      person who talks to the user.
+      Your team: copywriter (hero headline + body sections), variants_tester
+      (A/B headline variants + CTA options), conversion_editor (tightens the copy
+      for clarity, proof and momentum).
+      Run it like this: (1) distill the brief into a POSITIONING note -- audience,
+      core pain, promise, primary conversion goal, tone -- and send it to the
+      copywriter first; (2) when the draft copy lands, send it to variants_tester
+      for A/B headline and CTA options; (3) send the winning direction to
+      conversion_editor for a final polish; (4) review, request one round of fixes
+      if needed, then deliver the final page copy to the user. Cut scope before
+      you ship vague or unproven claims.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first to see who they are). Finish your turn after
+      writing. You may only message the agents in your can_talk_to.
+
+  - name: copywriter
+    type: claude
+    workdir: "{root}/page"
+    can_talk_to: [brief_analyst]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the COPYWRITER. Given the analyst's positioning note, write the
+      landing-page copy into COPY.md in the shared working directory: a hero block
+      (headline + subhead + primary CTA) and the body sections (problem, promise,
+      features-as-benefits, social proof placeholder, closing CTA). Lead with the
+      customer's outcome, not the product's features; keep sentences short and
+      concrete. Only make claims the brief supports -- flag anything you had to
+      assume rather than inventing proof. Return the draft to the brief_analyst.
+
+  - name: variants_tester
+    type: gemini
+    workdir: "{root}/page"
+    capture: pane
+    can_talk_to: [brief_analyst]
+    command: "gemini --yolo"
+    role: |
+      You are the VARIANTS TESTER. Take the copywriter's draft and produce
+      testable alternatives for the highest-leverage elements: 3-5 A/B headline
+      variants (each a different angle -- outcome, urgency, curiosity, objection,
+      authority) and 3-5 CTA button variants. For each, write one line on the
+      hypothesis it tests and who it should win with. Do not rewrite the whole
+      page -- focus on headline and CTA. Return the variant matrix to the
+      brief_analyst.
+
+  - name: conversion_editor
+    type: codex
+    workdir: "{root}/page"
+    can_talk_to: [brief_analyst]
+    command: "codex --yolo"
+    role: |
+      You are the CONVERSION EDITOR. Take the chosen copy + variants and tighten
+      the page for conversion without changing its meaning: cut filler, sharpen
+      the value proposition, front-load benefits, ensure every section drives
+      toward the CTA, and check the promise is consistent from headline to button.
+      Flag friction (vague claims, weak CTA verbs, missing proof) rather than
+      papering over it. Return the polished copy plus a short change list to the
+      brief_analyst.
