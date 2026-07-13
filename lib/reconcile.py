@@ -68,10 +68,10 @@ def warn(msg: str) -> None:
 def have_yaml() -> bool:
     """True iff PyYAML is importable (used only for *reading*)."""
     try:
-        import yaml  # noqa: F401
+        import yaml  # noqa: F401  # pragma: no cover - optional fast path; no-PyYAML is the supported path
 
-        return True
-    except Exception:
+        return True  # pragma: no cover
+    except Exception:  # pragma: no cover - exercised when PyYAML is absent (the supported path)
         return False
 
 
@@ -79,9 +79,9 @@ def load_raw(path) -> dict:
     """Parse *path* into a plain dict using PyYAML if present, else minyaml."""
     text = Path(path).read_text()
     if have_yaml():
-        import yaml
+        import yaml  # pragma: no cover - optional fast path; no-PyYAML is the supported path
 
-        return yaml.safe_load(text) or {}
+        return yaml.safe_load(text) or {}  # pragma: no cover
     import minyaml
 
     return minyaml.load(text) or {}

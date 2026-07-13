@@ -195,7 +195,7 @@ def test_install_codex_hook_symlink_falls_back_to_copy(tmp_path, monkeypatch):
     (user_home / "auth.json").write_text('{"token": 1}')
     _, agent = claude_cfg(tmp_path, type_="codex")
     agent.workdir.mkdir(parents=True)
-    with mock.patch.object(hooks.os, "symlink", side_effect=OSError("cross-device")), \
+    with mock.patch.object(Path, "symlink_to", side_effect=OSError("cross-device")), \
          mock.patch.object(hooks, "valid_toml", return_value=True):
         path = hooks.install_codex_hook(agent)
     dst = path / "auth.json"
@@ -252,6 +252,10 @@ def test_valid_toml_good():
     assert hooks.valid_toml('a = 1\n[b]\nc = "x"\n') is True
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 11),
+    reason="tomllib is stdlib only on 3.11+; on <3.11 valid_toml assumes valid (cannot check)",
+)
 def test_valid_toml_bad():
     assert hooks.valid_toml("a = = b\n") is False
 
