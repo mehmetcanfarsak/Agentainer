@@ -804,11 +804,46 @@ def test_api_agent_add(cfg):
             "name": "carol", "type": "claude",
             "command": "claude --dangerously-skip-permissions",
             "can_talk_to": ["alice"], "role": "reviewer",
-            "capture": "hook", "periodically_ping_seconds": 30,
+            "capture": "hook",
         })
         assert code == 200 and json.loads(body)["name"] == "carol"
         import config as cfgmod
         assert "carol" in cfgmod.load(cfg.path).names()
+
+
+def test_api_agent_add_with_pings(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        code, body = _post(h, "/api/agent/add", "sekret", {
+            "name": "carol", "type": "claude", "command": "claude --x",
+            "can_talk_to": ["alice"],
+            "pings": [
+                {"message": "work", "cron": "*/30 9-18 * * 1-5", "when_busy": "skip"},
+                {"message": "weekend", "cron": "0 12 * * sat,sun", "when_busy": "queue"},
+            ],
+        })
+        assert code == 200
+        import config as cfgmod
+        carol = cfgmod.load(cfg.path).get("carol")
+        assert [p.cron for p in carol.pings] == ["*/30 9-18 * * 1-5", "0 12 * * sat,sun"]
+        assert carol.pings[1].when_busy == "queue"
+        # A bad cron is validated on reload and surfaced as 400 (config untouched).
+        code, cbody = _post(h, "/api/agent/add", "sekret", {
+            "name": "dave", "command": "claude --x",
+            "pings": [{"message": "x", "cron": "not a cron"}],
+        })
+        assert code == 400 and "cron" in json.loads(cbody)["error"]
+        assert "dave" not in cfgmod.load(cfg.path).names()
+
+
+def test_api_agent_edit_pings(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        code, _ = _post(h, "/api/agent/edit", "sekret", {
+            "name": "alice",
+            "fields": {"pings": [{"message": "hourly", "cron": "0 * * * *"}]},
+        })
+        assert code == 200
+        import config as cfgmod
+        assert [p.cron for p in cfgmod.load(cfg.path).get("alice").pings] == ["0 * * * *"]
 
 
 def test_api_agent_add_bad(cfg):
@@ -934,6 +969,26 @@ class DummyPoller:
         self.stopped = True
 
 
+def test_run_server_autostarts_poller_when_enabled(cfg):
+    # "Receive replies" defaults ON: a fully-configured bridge starts the reply
+    # poller the moment the server serves -- no manual toggle needed.
+    cfg.telegram.enabled = True
+    cfg.telegram.bot_token = "1:x"
+    cfg.telegram.chat_id = "9"
+    with mock_tmux(), mock.patch.object(ui.telegram, "start_poller", lambda c: DummyPoller()):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            assert ui._tg_poller is not None
+            data = json.loads(_get(h, "/api/telegram", token="sekret")[1])
+            assert data["polling"] is True
+    assert ui._tg_poller is None  # shutdown() stopped the auto-started poller
+
+
+def test_run_server_no_poller_when_telegram_disabled(cfg):
+    # The common case: Telegram off -> no poller is started at serve time.
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        assert ui._tg_poller is None
+
+
 def test_api_telegram_get_default_off(cfg):
     with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
         data = json.loads(_get(h, "/api/telegram", token="sekret")[1])
@@ -944,13 +999,16 @@ def test_api_telegram_get_default_off(cfg):
 
 
 def test_api_telegram_post_enables_and_persists(cfg):
-    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+    with mock_tmux(), mock.patch.object(ui.telegram, "start_poller", lambda c: DummyPoller()), \
+            ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
         code, body = _post(h, "/api/telegram", "sekret", {
             "enabled": True, "bot_token": "123:ABC", "chat_id": "999",
             "mirror": ["alice"], "mirror_user": True, "mirror_system": False,
         })
         assert code == 200
         assert json.loads(body)["enabled"] is True and json.loads(body)["has_token"] is True
+        # enabling the bridge starts the reply poller by default (no toggle needed)
+        assert json.loads(body)["polling"] is True
         # persisted to YAML + reloadable
         import config as cfgmod
         rel = cfgmod.load(cfg.path)
@@ -962,6 +1020,20 @@ def test_api_telegram_post_enables_and_persists(cfg):
         assert "bot_token" not in got
 
 
+def test_api_telegram_post_toggles_poller_by_default(cfg):
+    # Enabling the bridge auto-starts the poller; disabling stops it; a config
+    # POST while disabled leaves it off. "Receive replies" needs no manual toggle.
+    with mock_tmux(), mock.patch.object(ui.telegram, "start_poller", lambda c: DummyPoller()), \
+            ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        body = json.loads(_post(h, "/api/telegram", "sekret",
+                                {"enabled": True, "bot_token": "1:x", "chat_id": "9"})[1])
+        assert body["polling"] is True and ui._tg_poller is not None      # None -> enabled -> start
+        body2 = json.loads(_post(h, "/api/telegram", "sekret", {"enabled": False})[1])
+        assert body2["polling"] is False and ui._tg_poller is None        # running -> disabled -> stop
+        body3 = json.loads(_post(h, "/api/telegram", "sekret", {"mirror_system": True})[1])
+        assert body3["polling"] is False and ui._tg_poller is None        # None -> disabled -> stays off
+
+
 def test_api_telegram_post_missing_and_invalid(cfg):
     with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
         assert _post(h, "/api/telegram", "sekret", {})[0] == 400  # nothing to set
@@ -971,7 +1043,8 @@ def test_api_telegram_post_missing_and_invalid(cfg):
 
 
 def test_api_telegram_test_paths(cfg):
-    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+    with mock_tmux(), mock.patch.object(ui.telegram, "start_poller", lambda c: DummyPoller()), \
+            ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
         # not configured -> 400
         assert _post(h, "/api/telegram/test", "sekret", {})[0] == 400
         # enable it
@@ -991,16 +1064,18 @@ def test_api_telegram_poll_start_stop_and_restart(cfg):
         with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
             # run before configured -> 400
             assert _post(h, "/api/telegram/poll", "sekret", {"run": True})[0] == 400
+            # enabling auto-starts the poller (default-on)
             _post(h, "/api/telegram", "sekret", {"enabled": True, "bot_token": "1:x", "chat_id": "9"})
-            # start polling
-            code, body = _post(h, "/api/telegram/poll", "sekret", {"run": True})
-            assert code == 200 and json.loads(body)["polling"] is True
+            assert ui._tg_poller is not None
             # a config POST while polling restarts the poller (covers restart branch)
             assert _post(h, "/api/telegram", "sekret", {"mirror_system": True})[0] == 200
             assert ui._tg_poller is not None
             # stop polling
             code, body = _post(h, "/api/telegram/poll", "sekret", {"run": False})
             assert code == 200 and json.loads(body)["polling"] is False
+            # manual re-start from the stopped state (covers the poll start path)
+            code, body = _post(h, "/api/telegram/poll", "sekret", {"run": True})
+            assert code == 200 and json.loads(body)["polling"] is True
 
 
 def test_shutdown_stops_running_poller(cfg):

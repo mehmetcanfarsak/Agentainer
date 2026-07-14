@@ -173,10 +173,10 @@ Applied to every agent unless the agent overrides them.
 - **Turn detection:** `claude` → Stop hook.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** The pipeline is purely event-driven off real
+- **No `pings`.** The pipeline is purely event-driven off real
   mail — the chief only acts when your transcript arrives, and the specialists only
   act when the chief briefs them. (If you wanted to chase a slow specialist, you'd
-  add `periodically_ping_seconds: 300` to it.)
+  add a `pings` cron rule to it.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — the final packet addressed to you is *held* (never bounced) until you
   flip it on (see §4).

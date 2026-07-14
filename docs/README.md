@@ -22,7 +22,8 @@ This folder holds the user-facing documentation. The design record is
 - **[The Mail Model](mail-model.md)** — the file-based messaging architecture:
   the four folders + `user`/`system` virtual mailboxes, one-at-a-time release,
   stop-triggered pickup, ACL routing and bounces, nudges, read-state, periodic
-  pings, the runaway-loop cap, and the durable JSONL log.
+  and **cron-scheduled pings** (`pings:`), the runaway-loop cap, and the durable
+  JSONL log.
 - **[Configuration Reference](configuration.md)** — every field of `agentainer.yaml`
   (`swarm:`, `defaults:`, `agents:`, `telegram:`), with types, defaults, and
   common mistakes.
@@ -70,8 +71,19 @@ These are turnkey topologies you can copy and run. Each has a matching config un
   `security` / `performance` / `style` reviewers, then a `synthesizer` merges them.
   ([`examples/pr-review-gate.yaml`](../examples/pr-review-gate.yaml))
 - **[Daily Briefing](use-cases/daily-briefing.md)** — a personal/exec morning digest
-  (gatherer → summarizer → writer), optionally self-triggered daily.
+  (gatherer → summarizer → writer), self-triggered on a cron `pings:` schedule.
   ([`examples/daily-briefing.yaml`](../examples/daily-briefing.yaml))
+- **[Scheduled Standup](use-cases/scheduled-standup.md)** — a self-running async
+  standup driven entirely by cron `pings:` (09:15 kickoff, 17:30 wrap, Friday retro).
+  ([`examples/scheduled-standup.yaml`](../examples/scheduled-standup.yaml))
+- **[Ops Watchtower](use-cases/ops-watchtower.md)** — the heaviest `pings:` showcase:
+  a `*/15` business-hours health sweep (`skip`) plus an hourly overnight cadence and
+  morning rollup (`when_busy: queue`), all self-driving.
+  ([`examples/ops-watchtower.yaml`](../examples/ops-watchtower.yaml))
+- **[Content Cadence](use-cases/content-cadence.md)** — `pings:` as a *weekly editorial
+  calendar* (plan Mon → draft Tue/Thu → review Wed → ship Fri, plus a monthly recap on
+  the 1st) using day-of-week and day-of-month cron.
+  ([`examples/content-cadence.yaml`](../examples/content-cadence.yaml))
 - **[Candidate Screen](use-cases/candidate-screen.md)** — coordinator sequences
   technical + behavioral interviews into one scored recommendation.
   ([`examples/candidate-screen.yaml`](../examples/candidate-screen.yaml))

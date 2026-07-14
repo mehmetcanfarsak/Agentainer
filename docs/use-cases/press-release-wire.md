@@ -134,7 +134,7 @@ Field by field (mirroring the research swarm):
 - **Turn detection:** `codex` → a `notify` program (its hook), installed at `up`.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** The wire is purely event-driven off real
+- **No `pings`.** The wire is purely event-driven off real
   mail — no agent self-starts on a timer.
 - **No `user` availability set.** The `user` mailbox defaults to **away** — mail
   to you is *held* (never bounced) until you flip it on (see §4).

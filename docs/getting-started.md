@@ -148,6 +148,30 @@ Before launching anything, sanity-check the config (this launches nothing):
 agentainer validate -c my-swarm.yaml
 ```
 
+### Optional: scheduled pings
+
+If you want an agent to be nudged on a schedule — not just when mail arrives —
+give it a `pings:` list. Each rule is a `message` plus a standard 5-field
+`cron` expression, evaluated in the **server's local time**:
+
+```yaml
+agents:
+  - name: dev
+    command: "claude --dangerously-skip-permissions"
+    pings:
+      - message: "Working hours: triage the review queue, then wait for mail."
+        cron: "*/30 9-18 * * 1-5"     # every 30 min, 9am-6pm, Mon-Fri
+      - message: "Weekend check-in — anything blocked?"
+        cron: "0 12 * * sat,sun"       # noon on weekends
+```
+
+Each ping arrives as a `system` message. Agentainer never lets pings pile up
+(at most one is outstanding at a time) and, by default, skips a rule that comes
+due while the agent is mid-turn. For the full schema — `when_busy`, the cron
+syntax table, and all the guards — see
+[`configuration.md` §5 `pings`](configuration.md#pings). (For a single repeating
+message, use one `pings` rule with a simple cron like `*/10 * * * *`.)
+
 ---
 
 ## 4. Bring it up

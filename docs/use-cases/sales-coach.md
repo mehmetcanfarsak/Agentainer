@@ -162,7 +162,7 @@ different model to vary the "voice" of the prospect (see §7 and
 [`multi-llm-swarm.md`](./multi-llm-swarm.md)).
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** No agent is auto-nudged on a timer — the
+- **No `pings`.** No agent is auto-nudged on a timer — the
   drill is purely event-driven off real mail (yours and the agents'). A live
   practice shouldn't have a background timer poking the prospect mid-thought.
 - **No `user` availability set in the file.** The `user` mailbox defaults to

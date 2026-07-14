@@ -424,29 +424,33 @@ shared-workspace prefixing stay completely invisible to the agent.
 ## 10. Periodic pings
 
 Some agents have standing, time-based duties (a news reporter doing its rounds)
-even with an empty inbox. Two optional per-agent fields drive this:
+even with an empty inbox. A per-agent `pings:` list of cron-scheduled nudges
+drives this:
 
 ```yaml
 agents:
   reporter:
-    periodically_ping_seconds: 1800
-    periodically_ping_message: "Check the news wires and post any updates."
+    pings:
+      - cron: "*/30 * * * *"    # every 30 minutes
+        message: "Check the news wires and post any updates."
 ```
 
 A periodic ping is delivered as a `system` message into the agent's own queue —
 **reusing the exact one-at-a-time pipeline**, so the model's experience is
 identical to normal mail; nothing new to learn. `maybe_ping(cfg, agent_name)`
-injects one only if **all three §10 guards** pass:
+injects one only if **all the §10 guards** pass:
 
-1. **Idle-only** — skip if the agent is busy (`turn.busy_info` is not `None`).
-   Never interrupt a turn in progress.
+1. **Idle-only (by default)** — a rule that comes due while the agent is busy
+   (`turn.busy_info` is not `None`) is skipped, unless it opts in with
+   `when_busy: queue`. Never interrupt a turn in progress.
 2. **No pile-up** — skip if an unhandled ping already sits in the queue or inbox.
    Ping files are named with the `PING_MARKER` (`ping-…`) prefix so a still-
    pending ping is detectable; a slow agent must not accumulate ten identical
    pings.
-3. **Cadence-is-minimum** — skip unless `periodically_ping_seconds` has elapsed
-   since the last ping (`<agent>.ping.json`). The cadence is a *floor*, not a hard
-   cron tick: if the agent is busy at the interval, the ping defers until free.
+3. **Due-this-minute** — a rule fires at most once per matching wall-clock minute
+   (deduped in `<agent>.ping.json`); on overlap the first deliverable rule in
+   list order wins. See [`configuration.md` §5 `pings`](configuration.md#pings)
+   for the full cron syntax and `when_busy` policy.
 
 Real mail always takes priority; a ping matters only when the inbox would
 otherwise be empty. Net effect: Agentainer is a lightweight **mailbox + cron**

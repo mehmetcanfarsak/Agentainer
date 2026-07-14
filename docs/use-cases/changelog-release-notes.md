@@ -140,7 +140,7 @@ Applied to every agent unless overridden.
   `MIGRATION.md` (before/after, exact steps), then reports back.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** The pipeline is purely event-driven off the
+- **No `pings`.** The pipeline is purely event-driven off the
   human's `send`; no agent self-starts.
 - **No `user` availability set.** The `user` mailbox defaults to **away** — mail
   to you is *held* (never bounced) until you flip it on (see §4).

@@ -1,0 +1,155 @@
+# =============================================================================
+# 🛰️ Ops watchtower -- a self-driving on-call monitoring swarm.
+#
+# The heaviest `pings:` showcase in the set: a swarm whose whole job is to wake
+# up on a schedule, check that things are healthy, and escalate only when they
+# are not -- no human `send` required. It leans on the two cron features the
+# other examples only touch lightly: a HIGH-FREQUENCY `*/15` business-hours
+# sweep, and an OVERNIGHT `when_busy: queue` cadence so a check that comes due
+# while the sentinel is mid-investigation waits its turn instead of being
+# dropped. Bring it up and leave it running:
+#
+#   cp examples/ops-watchtower.yaml my-watchtower.yaml
+#   agentainer up             -c my-watchtower.yaml
+#   agentainer user available -c my-watchtower.yaml   # so alerts reach you
+#   # ...then walk away. The schedules below do the rest.
+#   agentainer down           -c my-watchtower.yaml
+#
+# Shape: a SENTINEL hub owns the clock and the human-facing surface. It runs a
+# PROBER (collects health signals) and a DIAGNOSER (investigates anomalies), and
+# is the only agent that talks to `user`. Different agents, different schedules:
+#
+#   prober ────┐
+#              ├── sentinel ── user   (posts alerts, rollups, the weekly review)
+#   diagnoser ─┘
+#
+#   Hub and spoke: prober/diagnoser only talk to sentinel; sentinel is the only
+#   one that reaches user. Nothing moves until a `pings:` rule (or you) nudges
+#   the sentinel -- so the watchtower is genuinely self-driving.
+#
+# CRON RECAP: each `pings` entry is `message` + `cron` (+ optional `when_busy`).
+# `cron` is standard 5-field `minute hour day-of-month month day-of-week`,
+# evaluated in the host's LOCAL time. `when_busy: skip` (default) drops a ping
+# that comes due mid-turn; `when_busy: queue` makes it wait. Overnight windows
+# are a COMMA LIST in the hour field (`18-23,0-7`), never a descending range.
+#
+# Key-free: every `command` is a real CLI, but the swarm comes up and fires its
+# scheduled pings with NO API keys if you swap each `command` for a mock bash
+# loop (see headers in examples/quickstart.yaml). Treat `command` strings as
+# sensitive; they may embed keys.
+# =============================================================================
+
+swarm:
+  name: watchtower
+  root: ./watchtower-workspace
+
+defaults:
+  capture: none              # claude/codex are auto-upgraded to their hook at up
+  can_talk_to: []            # tightened per agent below
+
+agents:
+  - name: sentinel
+    type: claude
+    can_talk_to: [prober, diagnoser, user]
+    command: "claude --dangerously-skip-permissions"
+    # The clock lives here. Four rules, three cadences:
+    #   - a fast weekday-daytime sweep that must NOT stack (skip);
+    #   - a slower overnight sweep you cannot afford to miss (queue);
+    #   - a morning rollup of whatever happened overnight (queue);
+    #   - a weekly reliability review (skip).
+    pings:
+      # Business-hours health sweep, every 15 minutes, 09:00-17:45, Mon-Fri.
+      # `skip` (default): if the sentinel is still working a prior alert when the
+      # next quarter-hour comes due, that tick is dropped rather than piling a
+      # second sweep on top -- the freshest sweep is the one that matters.
+      - message: |
+          Health sweep. If you are idle, ask prober for the current status of the
+          watched services (up/down, error rate, latency, queue depth). If
+          anything looks off, hand it to diagnoser; only alert user on a real
+          regression. If you are already mid-investigation, ignore this tick.
+        cron: "*/15 9-17 * * 1-5"        # every 15 min, 09:00-17:45, Mon-Fri
+      # Overnight sweep, once an hour, 18:00-07:59, every day. `queue`: off-hours
+      # ticks are sparse and each one matters, so a check that comes due while
+      # you are still writing up the last incident WAITS and fires next.
+      - message: |
+          Overnight health check. Ask prober for status. Page user (via outbox/
+          user/) ONLY if something is actually down or breaching -- otherwise
+          just note it for the morning rollup and stay quiet.
+        cron: "0 18-23,0-7 * * *"        # hourly, 18:00-07:59, every day
+        when_busy: queue
+      # Morning rollup: at 08:00 on weekdays, summarize the overnight window.
+      # `queue` so the rollup is never dropped even if a check ran long.
+      - message: |
+          Overnight rollup. Summarize what prober and diagnoser saw between 18:00
+          and 08:00 -- incidents, near-misses, anything still degraded -- into a
+          short start-of-day status and post it to user.
+        cron: "0 8 * * 1-5"              # 08:00, Mon-Fri
+        when_busy: queue
+      # Weekly reliability review: Monday 08:30. A look-back, not an alert.
+      - message: |
+          Weekly reliability review. Ask diagnoser for the recurring issues and
+          slowest services from the past week, and post user a short review: top
+          incidents, what fixed them, and one thing to harden next.
+        cron: "30 8 * * mon"             # 08:30 every Monday
+    role: |
+      You are the SENTINEL of an on-call monitoring watchtower. You own the clock
+      and you are the ONLY agent that talks to the human (user). You do not run
+      the checks or the investigations yourself -- you coordinate:
+        (1) When a `system` ping says it's sweep/rollup/review time, ask prober
+            for current status (and diagnoser for history on the weekly review).
+        (2) When prober reports something off, delegate the investigation to
+            diagnoser with the exact symptom.
+        (3) Escalate to user ONLY on a genuine regression or outage -- be the
+            filter, not a firehose. Routine "all green" checks stay silent.
+      Keep alerts short and actionable: what broke, blast radius, what you're
+      doing. Spokes never talk to user; you speak for the swarm.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first to see who they are and whether they're
+      available) and finish your turn. You may message the agents in your
+      can_talk_to: prober, diagnoser, user.
+
+  - name: prober
+    type: claude
+    can_talk_to: [sentinel]
+    command: "claude --dangerously-skip-permissions"
+    # The prober also carries ONE schedule of its own -- a heavier synthetic
+    # check that only makes sense in the quiet of the night. Different agent,
+    # different cadence; `queue` so the deep run is never skipped.
+    pings:
+      - message: |
+          Nightly deep check: run the fuller synthetic probe (end-to-end flows,
+          certificate expiry, disk/quota headroom) that is too heavy for the
+          daytime sweeps. Report anything trending toward a limit to sentinel.
+        cron: "0 3 * * *"               # 03:00 every day
+        when_busy: queue
+    role: |
+      You are the PROBER. When the sentinel asks for status, collect the current
+      health signals for the watched services -- reachability, error rate,
+      latency, queue depth, and (on the nightly deep check) synthetic flows,
+      cert expiry, and resource headroom. Use your own tools. Report concretely:
+      per service, a state (ok/degraded/down) and the numbers behind it; call out
+      anything trending the wrong way. Do not diagnose root cause -- that's the
+      diagnoser's job. You report ONLY to the sentinel.
+      MAILBOX: read new mail in inbox/, act, then move it to read/. To reply,
+      write a file into outbox/sentinel/ (read outbox/sentinel/about.md first)
+      and finish your turn.
+
+  - name: diagnoser
+    type: codex
+    can_talk_to: [sentinel]
+    command: "codex --yolo"
+    # No schedule -- the diagnoser is purely reactive. It only works when the
+    # sentinel hands it a symptom, which keeps investigations off the clock and
+    # tied to real signals.
+    role: |
+      You are the DIAGNOSER. When the sentinel hands you a symptom (a service the
+      prober flagged, or a request for the week's recurring issues), investigate
+      root cause: correlate recent changes, logs, and dependencies; narrow it to
+      a likely cause and a concrete next step. For the weekly review, summarize
+      the recurring incidents and slowest services and what resolved them. Be
+      precise about confidence -- say "likely" vs "confirmed". You report ONLY to
+      the sentinel.
+      MAILBOX: read new mail in inbox/, act, then move it to read/. To reply,
+      write a file into outbox/sentinel/ (read outbox/sentinel/about.md first)
+      and finish your turn.

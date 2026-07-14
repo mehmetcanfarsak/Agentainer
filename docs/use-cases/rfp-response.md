@@ -173,9 +173,9 @@ Applied to every agent unless the agent overrides them.
   parser's compliance matrix and confirm every mandatory item is addressed.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** The bid moves only when real mail arrives —
+- **No `pings`.** The bid moves only when real mail arrives —
   purely event-driven. (If a writer stalled, you could add
-  `periodically_ping_seconds: 300` to nudge it.)
+  a `pings` cron rule to nudge it.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — the finished proposal is *held* until you flip yourself available
   (see §5).

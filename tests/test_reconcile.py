@@ -321,6 +321,30 @@ def test_edit_agent_coercion(tmp_path):
         pass
 
 
+def test_edit_agent_pings_structured_passthrough(tmp_path):
+    cfg = load_swarm(tmp_path, AGENTS)
+    rules = [
+        {"message": "work", "cron": "*/30 9-18 * * 1-5"},
+        {"message": "weekend", "cron": "0 12 * * sat,sun", "when_busy": "queue"},
+    ]
+    new = reconcile.edit_agent(cfg, "alice", pings=rules)
+    alice = new.get("alice")
+    assert [p.cron for p in alice.pings] == ["*/30 9-18 * * 1-5", "0 12 * * sat,sun"]
+    assert alice.pings[1].when_busy == "queue"
+    # Written through verbatim (not string-coerced): the on-disk YAML round-trips.
+    raw = reconcile.load_raw(cfg.path)
+    stored = next(a for a in raw["agents"] if a["name"] == "alice")["pings"]
+    assert stored[0]["message"] == "work"
+
+
+def test_edit_agent_bad_cron_rejected(tmp_path):
+    cfg = load_swarm(tmp_path, AGENTS)
+    original = Path(cfg.path).read_text()
+    with pytest.raises(cfgmod.ConfigError):
+        reconcile.edit_agent(cfg, "alice", pings=[{"message": "x", "cron": "nope"}])
+    assert Path(cfg.path).read_text() == original   # rejected edit left config intact
+
+
 def test_remove_agent_referenced_by_another(tmp_path):
     """Removing an agent that others can_talk_to must strip the now-dangling
     references, or the reload rejects them and leaves an unloadable config on

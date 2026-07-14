@@ -176,10 +176,10 @@ Applied to every agent unless the agent overrides them.
 - **Turn detection:** `claude` → Stop hook for all three.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** None of the four agents has a periodic ping
+- **No `pings`.** None of the four agents has a periodic ping
   configured, so no agent is auto-nudged on a timer while idle — the pipeline is
   purely event-driven off your one incoming message. (If you wanted the coach to
-  poke a slow specialist, you'd add `periodically_ping_seconds: 300` to it.)
+  poke a slow specialist, you'd add a `pings` cron rule to it.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — mail addressed to you is *held* (never bounced) until you flip it on
   (see §4).
@@ -501,8 +501,8 @@ example.
   resume_writer's — but now the chain is a ring, so prefer the coach gating it to
   keep one reviewer of record.
 - **Add periodic pings** to keep a slow specialist honest:
-  `periodically_ping_seconds: 300` on the `cover_writer`, with a
-  `periodically_ping_message: "still working on the letter?"`.
+  a `pings` cron rule on the `cover_writer`, with a
+  `message: "still working on the letter?"`.
 
 ### Wire it to a real delivery channel
 The coach delivers to the virtual `user` mailbox. To get the finished package

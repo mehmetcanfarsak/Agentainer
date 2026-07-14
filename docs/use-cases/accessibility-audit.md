@@ -210,10 +210,10 @@ Applied to every agent unless the agent overrides them.
   report mapped to exact success criteria; if anything is missing, ask the lead."
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** None of the agents has a periodic ping, so
+- **No `pings`.** None of the agents has a periodic ping, so
   no agent is auto-nudged on a timer while idle — the audit is purely event-driven
   off real mail. (If you wanted the lead to poke a slow auditor, add
-  `periodically_ping_seconds: 300` to it.)
+  a `pings` cron rule to it.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — mail addressed to you is *held* (never bounced) until you flip it on
   (see §4).

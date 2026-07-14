@@ -43,6 +43,19 @@ agents:
     type: claude
     can_talk_to: [researcher_a, researcher_b, researcher_c, writer, user]
     command: "claude --dangerously-skip-permissions"
+    # Battlecards go stale. This `pings:` rule self-triggers a weekly refresh so
+    # the human starts the week current, without anyone re-sending the brief.
+    # It's a `system` message pasted at the given wall-clock time (host LOCAL
+    # time); `when_busy: skip` (default) drops it if the analyst is already
+    # mid-analysis, so a live run is never interrupted.
+    pings:
+      - message: |
+          Monday refresh: re-run the standing competitor set from the human's
+          last brief -- re-brief each researcher on positioning, pricing,
+          strengths, weaknesses, and recent moves, collect the profiles, have
+          writer rebuild the battlecard, and deliver it to the user. If you are
+          mid-analysis, ignore this and continue.
+        cron: "0 9 * * mon"          # 09:00 every Monday (day name)
     role: |
       You are the COMPETITIVE INTELLIGENCE ANALYST and the hub of this team. The
       human gives you our market and a list of competitors. You do not write the

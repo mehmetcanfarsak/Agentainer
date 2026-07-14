@@ -71,7 +71,8 @@
     backdrop-filter: saturate(1.4) blur(10px);
     border-bottom: 1px solid var(--border);
   }
-  .brand { display: flex; align-items: center; gap: .55rem; font-weight: 700; letter-spacing: -.01em; }
+  .brand { display: flex; align-items: center; gap: .55rem; font-weight: 700; letter-spacing: -.01em; cursor: pointer; }
+  .brand:focus-visible { outline: 2px solid var(--accent, #6ea8fe); outline-offset: 3px; border-radius: 6px; }
   .brand .dot {
     width: 26px; height: 26px; border-radius: 8px; flex: 0 0 auto;
     background: linear-gradient(135deg, var(--accent), #7c3aed);
@@ -161,6 +162,10 @@
   .pill.recover { border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; font-family: inherit; }
   .pill.recover:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
   .pill.recover:disabled { opacity: .6; cursor: default; }
+  /* context-compaction quick action (types /compact into the agent) */
+  .pill.compactbtn { border: 1px solid var(--accent); background: transparent; color: var(--accent); cursor: pointer; font-family: inherit; }
+  .pill.compactbtn:hover:not(:disabled) { background: var(--accent); color: #fff; }
+  .pill.compactbtn:disabled { opacity: .6; cursor: default; }
 
   /* connection-honesty indicator in the app bar */
   .connind {
@@ -208,8 +213,14 @@
   .mailhead { display: flex; align-items: center; gap: .6rem; margin-bottom: .8rem; flex-wrap: wrap; }
   .mailhead .who { display: flex; align-items: center; gap: .6rem; }
   .mailhead h2 { margin: 0; font-size: 1.05rem; }
-  .mail { display: grid; grid-template-columns: 300px 1fr; gap: .9rem; align-items: start; }
-  .contacts { padding: .4rem; overflow: hidden; }
+  /* The detail-page status pills are injected into a bare <span>, so give it the
+     same flex + gap as the home card's .meta so waiting/Stop/Compact don't jam
+     together. */
+  #mailStatus { display: inline-flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+  /* Messaging-app layout: the whole mail view is one viewport-tall row; only the
+     contacts list and the messages region scroll -- never the page itself. */
+  .mail { display: grid; grid-template-columns: 300px 1fr; grid-template-rows: minmax(0, 1fr); gap: .9rem; height: calc(100dvh - 150px); min-height: 360px; }
+  .contacts { padding: .4rem; overflow-y: auto; min-height: 0; }
   .contact {
     display: flex; gap: .6rem; align-items: center; padding: .55rem .55rem; border-radius: var(--radius-sm);
     cursor: pointer; border: 1px solid transparent;
@@ -223,8 +234,11 @@
   .contact .prev { color: var(--muted); font-size: .82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .badge { background: var(--accent); color: var(--accent-fg); border-radius: 999px; font-size: .7rem; font-weight: 700; padding: .05rem .42rem; }
 
-  .thread { display: flex; flex-direction: column; min-height: 60vh; }
-  .thread .scroll { padding: 1rem; display: flex; flex-direction: column; gap: .7rem; overflow-y: auto; flex: 1 1 auto; }
+  .thread-wrap { display: flex; flex-direction: column; min-height: 0; }
+  .thread { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  /* min-height:0 lets this flex child shrink below its content so overflow-y
+     actually engages -- without it the messages grow the page instead. */
+  .thread .scroll { padding: 1rem; display: flex; flex-direction: column; gap: .7rem; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
   .msg { max-width: 78%; padding: .55rem .75rem; border-radius: 14px; box-shadow: var(--shadow); word-wrap: break-word; overflow-wrap: anywhere; }
   .msg .m-head { font-size: .68rem; color: var(--muted); margin-bottom: .2rem; display: flex; gap: .5rem; }
   /* rendered markdown inside a bubble */
@@ -242,6 +256,9 @@
   .msg.out code, .msg.out pre.md-pre { background: rgba(255,255,255,.2); }
   .m-more { display: block; margin-top: .3rem; padding: 0; background: none; border: none; cursor: pointer; font: inherit; font-size: .72rem; color: var(--accent); text-decoration: underline; opacity: .85; }
   .m-more:hover { opacity: 1; }
+  .m-earlier { display: block; width: 100%; margin: 0 0 .6rem; padding: .35rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font: inherit; font-size: .78rem; color: var(--muted); }
+  .m-earlier:hover { color: var(--text); }
+  .pager { display: flex; justify-content: center; padding: .7rem 0 .3rem; font-size: .8rem; }
   .msg.out .m-more { color: color-mix(in srgb, var(--accent-fg) 85%, transparent); }
   .m-status { font-size: .66rem; margin-top: .25rem; text-align: right; color: var(--muted); letter-spacing: .01em; }
   .msg.out .m-status { color: color-mix(in srgb, var(--accent-fg) 78%, transparent); }
@@ -289,6 +306,13 @@
   .agentrow .info { flex: 1 1 auto; min-width: 0; }
   .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
   .rowend { display: flex; gap: .5rem; justify-content: flex-end; margin-top: .6rem; }
+  /* cron-ping editor rows: message grows, cron is monospace, busy is compact. */
+  .pingrow { display: flex; gap: .4rem; align-items: center; margin-bottom: .4rem; }
+  .pingrow .ping-msg { flex: 2 1 40%; }
+  .pingrow .ping-cron { flex: 1 1 30%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .82rem; }
+  .pingrow .ping-busy { flex: 0 0 auto; width: auto; }
+  .pingrow .ping-del { flex: 0 0 auto; padding: .3rem .55rem; }
+  @media (max-width: 560px) { .pingrow { flex-wrap: wrap; } .pingrow .ping-msg { flex-basis: 100%; } }
 
   .toast {
     position: fixed; left: 50%; bottom: 1.3rem; transform: translateX(-50%);
@@ -351,27 +375,58 @@
     .msg { max-width: 88%; }
     main { padding: .8rem .7rem 4rem; }
   }
+
+  /* ---- info tooltips: a visible ⓘ affordance + hover/click popover ------ */
+  /* The icon marks that help exists; hovering or clicking (tap on mobile)   */
+  /* it shows a popover with the full explanation. Zero dependencies.        */
+  .info {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; flex: none; box-sizing: border-box;
+    border-radius: 50%; border: 1px solid var(--muted); color: var(--muted);
+    font-size: 10px; font-weight: 700; font-style: normal; line-height: 1;
+    font-family: Georgia, "Times New Roman", serif; /* a nicer italic-ish i */
+    cursor: help; vertical-align: middle; margin-left: .3rem; user-select: none;
+    transition: color .12s, border-color .12s, background .12s;
+  }
+  .info::before { content: "i"; }
+  .info:hover, .info:focus-visible, .info.open {
+    color: var(--accent-fg); border-color: var(--accent); background: var(--accent);
+    outline: none;
+  }
+  .tip-pop {
+    position: fixed; z-index: 1000; max-width: min(300px, 90vw);
+    background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: .5rem .62rem; font-size: .78rem; line-height: 1.4;
+    box-shadow: var(--shadow-lg); pointer-events: none;
+    opacity: 0; transform: translateY(-3px); transition: opacity .1s, transform .1s;
+  }
+  .tip-pop.show { opacity: 1; transform: translateY(0); }
+  .tip-pop.pinned { pointer-events: auto; }
+  .tip-pop .tip-hint {
+    display: block; margin-top: .4rem; font-size: .68rem; color: var(--muted);
+  }
 </style>
 </head>
 <body data-pane="list">
   <header id="bar">
-    <div class="brand">
+    <div class="brand" id="brand" role="button" tabindex="0" title="Go to Agents">
       <span class="dot">◆</span>
-      <span>Agentainer<small id="swarmMeta">control plane</small></span>
+      <span>Agentainer<small id="swarmMeta" data-tip="This web UI is the Agentainer control plane; it can start agents, edit config, and drive them, and listens on 127.0.0.1 by default for safety.">control plane</small></span>
     </div>
     <span class="spacer"></span>
     <span class="connind" id="connind" hidden></span>
     <div class="avail" id="availWrap" hidden>
-      <span class="lbl" id="availLbl">You: away</span>
-      <label class="switch" title="Receive mail from agents">
+      <span class="lbl" id="availLbl" data-tip="Your availability to receive mail from agents; when away, agents that try to reach you are told you are not available.">You: away</span>
+      <label class="switch">
         <input type="checkbox" id="availToggle" />
         <span class="track"></span><span class="knob"></span>
-      </label>
+      </label><span class="info" tabindex="0" role="button" aria-label="More info" data-tip="Toggle your availability; when on, agents may deliver mail to your user mailbox, when off it is held (not bounced) until you return."></span>
     </div>
     <nav id="nav" hidden>
-      <button class="navbtn active" data-view="agents">Agents</button>
-      <button class="navbtn" data-view="activity">Activity</button>
-      <button class="navbtn" data-view="settings">Settings</button>
+      <button class="navbtn active" data-view="agents">Agents</button><span class="info" tabindex="0" role="button" aria-label="More info" data-tip="Show the overview of every configured agent, its live state, and quick actions."></span>
+      <button class="navbtn" data-view="activity">Activity</button><span class="info" tabindex="0" role="button" aria-label="More info" data-tip="Show the durable event timeline of agent and mail activity."></span>
+      <button class="navbtn" data-view="settings">Settings</button><span class="info" tabindex="0" role="button" aria-label="More info" data-tip="Show swarm configuration and per-agent settings."></span>
     </nav>
   </header>
 
@@ -384,10 +439,10 @@
         <h2>Connect</h2>
         <p class="muted" style="margin-top:0">Enter the access token printed when you run <code>agentainer up</code> (also shown by <code>agentainer serve</code>).</p>
         <div class="fld">
-          <input id="token" class="field" type="password" placeholder="UI token" autocomplete="off" />
+          <input id="token" class="field" type="password" placeholder="UI token" autocomplete="off" /><span class="info" tabindex="0" role="button" aria-label="More info" data-tip="Paste the access token printed when you run agentainer up (also shown by agentainer serve); required to connect to the control plane."></span>
         </div>
         <div class="rowend">
-          <button class="btn" id="connect">Connect</button>
+          <button class="btn" id="connect">Connect</button><span class="info" tabindex="0" role="button" aria-label="More info" data-tip="Connect this UI to the Agentainer control plane using the token above."></span>
         </div>
       </div>
     </section>

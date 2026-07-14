@@ -39,6 +39,30 @@ agents:
     type: claude
     can_talk_to: [billing, technical, escalation, user]
     command: "claude --dangerously-skip-permissions"
+    # Scheduled sweeps keep the front desk honest even when no new ticket has
+    # arrived. Each rule fires a `system` nudge at the given wall-clock time
+    # (host LOCAL time). `when_busy: skip` (the default) drops a ping that comes
+    # due mid-turn so a busy inbox stays clean; `when_busy: queue` makes it wait
+    # instead -- used below for the off-hours emergency check you never want to
+    # miss.
+    pings:
+      # Business hours: sweep the queue every 20 min, 9am-6pm, Mon-Fri.
+      - message: |
+          Business-hours sweep: scan for any ticket sitting unrouted, or one
+          waiting too long on a specialist, and chase it. Then wait for mail.
+        cron: "*/20 9-18 * * 1-5"     # every 20 min, 09:00-18:59, Mon-Fri
+      # Off-hours: only surface genuine emergencies. Queue it (don't skip) so a
+      # mid-turn intake still sees the check once it frees up.
+      - message: |
+          Off-hours: only escalate anything on fire -- an outage, a security or
+          legal issue, or a furious churn-risk customer. Otherwise stay quiet.
+        cron: "0 20-23,0-7 * * *"     # top of each hour, 8pm-7am, every day
+        when_busy: queue
+      # Weekend check-in, lighter cadence -- twice a day, Sat & Sun.
+      - message: |
+          Weekend check-in: glance at the queue and escalate only what genuinely
+          cannot wait until Monday.
+        cron: "0 11,17 * * sat,sun"   # 11:00 and 17:00, Saturday & Sunday
     role: |
       You are INTAKE -- the front desk of a customer-support team and the only
       hub. Every ticket the customer (user) sends lands in your inbox. For each

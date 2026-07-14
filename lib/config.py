@@ -26,6 +26,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+# cron is a sibling leaf module (it imports nothing from lib); every importer of
+# config puts lib/ on sys.path first, so a bare import resolves.
+import cron
+
 try:  # pragma: no cover - exercised by whichever branch is installed
     import yaml as _yaml
 
@@ -91,6 +95,67 @@ VALID_CAPTURE = ("hook", "pane", "none", "auto")
 NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
 
 
+WHEN_BUSY = ("skip", "queue")
+
+
+@dataclass(frozen=True)
+class PingRule:
+    """One scheduled ping: a message, its cron expression, and a busy policy.
+
+    ``schedule`` is the parsed :class:`cron.Cron` (validated at config load, so a
+    bad expression is a ``ConfigError`` the operator sees immediately, never a
+    silent no-op at runtime). Cron is evaluated in the host's LOCAL time.
+
+    ``when_busy`` controls what happens if the rule is due while the agent is
+    mid-turn: ``"skip"`` (default) drops this firing so a busy agent's mailbox
+    never fills with stale pings; ``"queue"`` enqueues it anyway so it is waiting
+    when the turn ends. Either way the global no-pile-up guard keeps at most one
+    unhandled ping outstanding.
+    """
+
+    message: str
+    cron: str
+    schedule: Any
+    when_busy: str = "skip"
+
+
+def _parse_pings(raw, agent_name: str) -> list:
+    """Validate and parse an agent's ``pings:`` list into ``PingRule``s.
+
+    Each entry must be a mapping with a non-empty ``message`` and a valid 5-field
+    ``cron``; ``when_busy`` (optional) must be ``skip`` or ``queue``. Anything
+    malformed raises ``ConfigError`` naming the agent, so the schedule is proven
+    loadable before the swarm starts.
+    """
+    if raw in (None, ""):
+        return []
+    if not isinstance(raw, list):
+        raise ConfigError(f"agent {agent_name}: `pings` must be a list")
+    rules = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ConfigError(f"agent {agent_name}: pings[{i}] must be a mapping")
+        message = entry.get("message")
+        expr = entry.get("cron")
+        if not message or not str(message).strip():
+            raise ConfigError(f"agent {agent_name}: pings[{i}] needs a message")
+        if not expr or not str(expr).strip():
+            raise ConfigError(f"agent {agent_name}: pings[{i}] needs a cron expression")
+        try:
+            schedule = cron.parse(str(expr))
+        except cron.CronError as exc:
+            raise ConfigError(f"agent {agent_name}: pings[{i}] bad cron {expr!r}: {exc}")
+        when_busy = str(entry.get("when_busy") or "skip").strip().lower()
+        if when_busy not in WHEN_BUSY:
+            raise ConfigError(
+                f"agent {agent_name}: pings[{i}] when_busy must be one of {WHEN_BUSY}"
+            )
+        rules.append(PingRule(
+            message=str(message), cron=str(expr), schedule=schedule, when_busy=when_busy,
+        ))
+    return rules
+
+
 @dataclass
 class Agent:
     name: str
@@ -103,8 +168,7 @@ class Agent:
     role: str
     can_talk_to: list[str]
     mail_dir: Path
-    periodically_ping_seconds: int = 0
-    periodically_ping_message: str = ""
+    pings: list = field(default_factory=list)
     resume_args: str | None = None
     resume_command: str | None = None
     env: dict[str, str] = field(default_factory=dict)
@@ -478,15 +542,10 @@ def load(path: str | os.PathLike) -> SwarmConfig:
             f"agent {name}: create_workdir",
         )
 
-        ping_seconds = raw.get("periodically_ping_seconds")
-        if ping_seconds is None:
-            ping_seconds = defaults.get("periodically_ping_seconds")
-        ping_seconds = int(ping_seconds or 0)
-        ping_message = (
-            raw.get("periodically_ping_message")
-            or defaults.get("periodically_ping_message")
-            or ""
-        )
+        pings_raw = raw.get("pings")
+        if pings_raw is None:
+            pings_raw = defaults.get("pings")
+        pings = _parse_pings(pings_raw, name)
 
         env = dict(_as_str_map(defaults.get("env"), "defaults.env"))
         env.update(_as_str_map(tconf.get("env"), f"agent_types.{atype}.env"))
@@ -507,8 +566,7 @@ def load(path: str | os.PathLike) -> SwarmConfig:
                     f"agent {name}: can_talk_to",
                 ),
                 mail_dir=mail_dir,
-                periodically_ping_seconds=ping_seconds,
-                periodically_ping_message=str(ping_message),
+                pings=pings,
                 resume_args=raw.get("resume_args")
                 or defaults.get("resume_args")
                 or tconf.get("resume_args"),

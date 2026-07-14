@@ -209,7 +209,7 @@ full treatment see [`custom-workspace.md`](./custom-workspace.md).
   default `capture` would be `auto` → the type's natural mode, so everything
   fires its turn-completion signal and the stop→sweep→route→nudge clock keeps
   running. (If you swapped in a `gemini` agent you'd add `capture: pane`.)
-- **No `periodically_ping_seconds`.** The swarm is purely event-driven off real
+- **No `pings`.** The swarm is purely event-driven off real
   mail — it only moves when you send a spec. (Add a ping to the architect if you
   want a stale-pipeline nag.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to

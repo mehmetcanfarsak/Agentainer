@@ -249,7 +249,7 @@ scrollback, so this is how you reconstruct what happened (`user-send`,
 
 - **Add a periodic ping for a slow researcher.** There are no periodic pings in
   this config — it's purely event-driven off real mail. To poke the researcher
-  while it waits on a specialist, add `periodically_ping_seconds: 300` to it.
+  while it waits on a specialist, add a `pings` cron rule to it.
 
 - **Availability shapes the ending.** If `user` is **away** when the researcher
   finishes, your final package is *held* (with a `system` ack) rather than lost —

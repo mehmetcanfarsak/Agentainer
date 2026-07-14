@@ -194,6 +194,20 @@ next request sees the change:
 Removing an agent that a peer still lists in `can_talk_to` would leave the config
 invalid; the server surfaces that as a `400` rather than writing a broken file.
 
+#### Scheduled pings (cron) in the agent form
+
+The add/edit agent form has a **Scheduled pings** section: click **+ Add
+schedule** to add a row, each with a **message**, a **5-field cron expression**
+(`minute hour day-of-month month day-of-week`, evaluated in the server's local
+time), and a **when-busy** policy (`skip` = drop the ping if the agent is
+mid-turn, keeping its mailbox clean; `queue` = enqueue it to wait). Add several
+rows to nudge an agent differently at different times (e.g. `*/30 9-18 * * 1-5`
+for working hours and `0 12 * * sat,sun` for weekends). These schedules override
+the single "Ping every N seconds" cadence for that agent. The cron is validated
+on save — a malformed expression comes back as an error toast and the config is
+left untouched. See [configuration.md](configuration.md#pings) for the full cron
+syntax and semantics.
+
 ### Telegram bridge (optional)
 
 If a Telegram bot is configured, `GET/POST /api/telegram`,

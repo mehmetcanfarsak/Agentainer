@@ -162,10 +162,10 @@ Applied to every agent unless the agent overrides them.
 - **Turn detection:** `claude` → Stop hook.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** None of the five agents has a periodic ping
+- **No `pings`.** None of the five agents has a periodic ping
   configured, so no agent is auto-nudged on a timer while idle — the screen is
   purely event-driven off real mail. (If you wanted the coordinator to poke a slow
-  interviewer, you'd add `periodically_ping_seconds: 300` to it.)
+  interviewer, you'd add a `pings` cron rule to it.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — mail addressed to you is *held* (never bounced) until you flip it on
   (see §4).
@@ -432,8 +432,7 @@ This swarm is a starting point. A few small edits change its shape:
   summary if the scorer is offline. Wider ACL = more relays; tighter = more
   funneled. The orchestrator bounces anything off-list either way.
 
-- **Add periodic pings.** If an interviewer is slow, add `periodically_ping_seconds:
-  300` to that agent so the orchestrator nudges it on a timer instead of waiting for
+- **Add periodic pings.** If an interviewer is slow, add a `pings` cron rule to that agent so the orchestrator nudges it on a timer instead of waiting for
   you to notice.
 
 - **Persist the rubric.** The scheduler writes `PLAN.md` in its workdir; point its

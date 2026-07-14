@@ -188,10 +188,10 @@ Applied to every agent unless the agent overrides them.
   file:line fix note; always tell pm."
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** None of the four agents has a periodic ping
+- **No `pings`.** None of the four agents has a periodic ping
   configured, so no agent is auto-nudged on a timer while idle — the pipeline is
   purely event-driven off real mail. (If you wanted the PM to poke a slow
-  implementer, you'd add `periodically_ping_seconds: 300` to it.)
+  implementer, you'd add a `pings` cron rule to it.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — mail addressed to you is *held* (never bounced) until you flip it on
   (see §4).
@@ -493,8 +493,9 @@ mixed capture modes transparently — see
 ### Periodic ping for slow builds
 If a long build stalls, add to the PM or implementer:
 ```yaml
-    periodically_ping_seconds: 300
-    periodically_ping_message: "still building? reply with current ticket status."
+    pings:
+      - cron: "*/5 * * * *"    # every 5 minutes
+        message: "still building? reply with current ticket status."
 ```
 
 ---

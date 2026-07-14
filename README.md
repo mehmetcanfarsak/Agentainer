@@ -35,6 +35,7 @@ availability, the durable log).
 - [Install](#install)
 - [Quick start (no API keys)](#quick-start-no-api-keys)
 - [The model in one screen](#the-model-in-one-screen)
+- [Scheduled pings (cron)](#scheduled-pings-cron)
 - [Architecture](#architecture)
 - [Commands](#commands)
 - [Key invariants](#key-invariants)
@@ -96,6 +97,55 @@ folders**:
 When an agent **stops** with unread mail, the orchestrator sweeps its `outbox`
 and pastes a **nudge** ("you have mail — read it, then move it to `read/`"),
 re-injecting the protocol every time (including the allowed-recipient list).
+
+Agents can also be nudged on a schedule — see **[Scheduled pings](#scheduled-pings-cron)**
+below.
+
+## ⏰ Scheduled pings (cron)
+
+Most swarms are *reactive*: they move when a message lands. But some work needs
+to **happen at a time** — a morning digest, a standup, a health sweep, a Friday
+publish. Give any agent (or `defaults:`) a **`pings:`** list and the orchestrator
+nudges it on a schedule, delivering each rule's `message` as ordinary `system`
+mail. The model does nothing new — it just reads the file it's handed.
+
+```yaml
+agents:
+  - name: chief
+    type: claude
+    can_talk_to: [user]
+    pings:
+      # message + a standard 5-field cron (minute hour day-of-month month day-of-week)
+      - message: "Working hours: rebuild the digest and send it to user."
+        cron: "*/30 9-18 * * 1-5"          # every 30 min, 09:00-18:30, Mon-Fri
+      - message: "Off-hours: only flag something genuinely urgent."
+        cron: "0 20-23,0-7 * * *"          # hourly overnight (comma list crosses midnight)
+        when_busy: queue                   # wait for a mid-turn agent instead of dropping
+      - message: "Weekend check-in."
+        cron: "0 12 * * sat,sun"           # noon Sat & Sun (3-letter day names)
+```
+
+- **Zero-dependency cron** ([`lib/cron.py`](lib/cron.py)) — `*`, `*/step`,
+  `a-b` ranges, `a-b/step`, comma lists, and 3-letter month/day names
+  (`jan`–`dec`, `sun`–`sat`; day-of-week `0`/`7` both Sunday); standard Vixie
+  dom/dow OR rule. Evaluated in the **host's local time**.
+- **`when_busy: skip` (default) | `queue`** — a rule that comes due while the
+  agent is mid-turn is either dropped (so a busy mailbox never fills with stale
+  pings) or made to wait. Use `skip` for high-frequency checks where the next
+  tick makes a missed one moot; `queue` when the tick is the point.
+- **Safe by construction** — cron is validated **fail-fast at config load**; at
+  most one unhandled ping is outstanding per agent (no pile-up); and each rule
+  fires at most once per matching minute.
+
+Full field reference and cron table: [`docs/configuration.md`](docs/configuration.md#pings).
+Ready-to-run showcases:
+
+| Example | What it shows |
+| --- | --- |
+| [`scheduled-standup`](examples/scheduled-standup.yaml) · [guide](docs/use-cases/scheduled-standup.md) | A self-running async standup — different agents on different schedules. |
+| [`daily-briefing`](examples/daily-briefing.yaml) · [guide](docs/use-cases/daily-briefing.md) | A morning digest, self-triggered on a weekday + weekend schedule. |
+| [`ops-watchtower`](examples/ops-watchtower.yaml) · [guide](docs/use-cases/ops-watchtower.md) | High-frequency `*/15` monitoring with `skip` + overnight `queue`. |
+| [`content-cadence`](examples/content-cadence.yaml) · [guide](docs/use-cases/content-cadence.md) | Cron as a *weekly calendar* — day-of-week and day-of-month scheduling. |
 
 ## 🏗️ Architecture
 

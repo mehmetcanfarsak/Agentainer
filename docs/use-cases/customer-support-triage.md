@@ -135,6 +135,14 @@ agents:
     type: claude
     can_talk_to: [billing, technical, escalation, user]
     command: "claude --dangerously-skip-permissions"
+    pings:
+      - message: "Business-hours sweep: chase any unrouted or long-waiting ticket."
+        cron: "*/20 9-18 * * 1-5"     # every 20 min, 09:00-18:59, Mon-Fri
+      - message: "Off-hours: only escalate anything on fire."
+        cron: "0 20-23,0-7 * * *"     # top of each hour, 8pm-7am, every day
+        when_busy: queue
+      - message: "Weekend check-in: escalate only what can't wait for Monday."
+        cron: "0 11,17 * * sat,sun"   # 11:00 and 17:00, Sat & Sun
     role: |
       You are INTAKE -- the front desk of a customer-support team and the only
       hub. Every ticket the customer (user) sends lands in your inbox. For each
@@ -195,6 +203,23 @@ Field by field:
 - **`role`** — the classifier + relay logic: classify each ticket, route or
   answer, and relay specialist resolutions to `user`. It ends with the standard
   **MAILBOX reminder** (read `inbox/`; write `outbox/<name>/`; move to `read/`).
+- **`pings:`** — three **cron-scheduled sweeps** so the desk stays honest even
+  when no new ticket has arrived. Each entry is a `message` plus a 5-field `cron`
+  (`minute hour day-of-month month day-of-week`, in the host's local time),
+  optionally with `when_busy`:
+  - **Business hours** — `*/20 9-18 * * 1-5` fires every 20 minutes from 09:00 to
+    18:59, Mon-Fri, nudging intake to chase any unrouted or long-waiting ticket.
+  - **Off-hours** — `0 20-23,0-7 * * *` fires at the top of each hour from 8pm to
+    7am every day (note the **comma list `20-23,0-7`** in the hour field — that's
+    how you express an overnight window, since a single range must ascend). It
+    carries `when_busy: queue`, so if intake is mid-turn when the check comes due
+    it **waits** rather than being dropped — you never silently miss the "anything
+    on fire?" sweep.
+  - **Weekend** — `0 11,17 * * sat,sun` fires at 11:00 and 17:00 on Saturday and
+    Sunday (using the 3-letter **day names**), a lighter twice-a-day check-in.
+
+  Because each rule carries its own message, intake knows which posture to take
+  (full triage vs. emergencies-only) from the ping text alone.
 - **Turn detection:** `claude` → a **Stop hook** (installed automatically at `up`).
 
 ### `billing` (type: `codex`)
@@ -216,9 +241,10 @@ Field by field:
   command.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** The desk is purely event-driven off real
-  tickets — nothing self-starts a turn. (If you wanted intake to nudge a quiet
-  specialist, add `periodically_ping_seconds: 300` to that agent; see §7.)
+- **No cron pings on the specialists.** Only `intake` self-triggers (the sweeps
+  above); `billing`, `technical`, and `escalation` stay purely event-driven off
+  real tickets. (If you wanted to nudge a quiet specialist, give it its own
+  `pings:` rule; see §8.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — a reply addressed to you is *held* (never bounced) until you flip it
   on.
@@ -454,14 +480,17 @@ handy for un-sticking an agent, but the mail model is the normal path.
   `billing`'s). Remember: any name added to a `can_talk_to` that includes `user`
   widens the customer-facing surface — keep that narrow on purpose.
 
-- **Keep a quiet specialist warm.** Add a periodic nudge so a stalled escalation
-  can't go silent:
+- **Keep a quiet specialist warm.** Give a specialist its own `pings:` schedule
+  so a stalled escalation can't go silent — e.g. an hourly check during business
+  hours:
   ```yaml
   - name: escalation
     # ...
-    periodically_ping_seconds: 600
-    periodically_ping_message: "Any open high-risk tickets still need a reply?"
+    pings:
+      - message: "Any open high-risk tickets still need a reply?"
+        cron: "0 9-18 * * 1-5"   # top of each hour, 9am-6pm, weekdays
   ```
+  (`intake` already carries the desk-wide sweeps described in §3.)
 
 - **Bridge to chat.** Add a `telegram:` block (off by default) to mirror `user`
   mail and agent answers into a Telegram chat so a human on-call stays reachable

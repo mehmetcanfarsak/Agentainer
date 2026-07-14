@@ -86,6 +86,15 @@ with unread mail, the orchestrator sweeps its outbox and pastes a **nudge**
    wedge or loop the system.
 6. **Errors come back as mail** (`system` sender), so the model self-corrects
    in-band with no new concept.
+7. **Three control planes, one capability set — CLI, UI, and Telegram must reach
+   parity.** The user must be able to do *literally everything* from Telegram that
+   they can do from the UI or by editing `agentainer.yaml` — and the same holds
+   for the CLI. Every user-facing feature ships on **all three** surfaces (CLI,
+   UI, Telegram); a feature added to one is not "done" until it exists on the
+   other two. The shared, tested core logic lives in `lib/` so each surface is a
+   thin adapter over the same functions (keeps the 100%-coverage core the
+   substance). When you add a capability, add its CLI subcommand, its UI control,
+   and its Telegram command together, and update the docs for all three.
 
 ## Footguns (carry these forward from v1)
 

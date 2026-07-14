@@ -173,10 +173,10 @@ Applied to every agent unless the agent overrides them.
 - **Turn detection:** `claude` → a **Stop hook** (installed at `up`).
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** None of the four agents has a periodic ping
+- **No `pings`.** None of the four agents has a periodic ping
   configured, so no agent is auto-nudged on a timer while idle — the pipeline is
   purely event-driven off real mail. (If you wanted the spec_reader to poke a
-  slow writer, you'd add `periodically_ping_seconds: 300` to it.)
+  slow writer, you'd add a `pings` cron rule to it.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — mail addressed to you is *held* (never bounced) until you flip it on
   (see §4).
@@ -487,7 +487,7 @@ The factory is a template — bend it to your shop:
   [`custom-workspace.md`](../use-cases/custom-workspace.md).
 
 - **Add a periodic nudge.** If a long spec makes the hub go quiet, add
-  `periodically_ping_seconds: 300` to `spec_reader` so it's gently reminded to
+  a `pings` cron rule to `spec_reader` so it's gently reminded to
   keep moving.
 
 ---

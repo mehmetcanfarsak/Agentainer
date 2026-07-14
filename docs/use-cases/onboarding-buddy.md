@@ -151,10 +151,10 @@ Applied to every agent unless the agent overrides them.
   passwords or secrets** — it points to the self-service reset flow instead.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** No agent is auto-nudged on a timer while
+- **No `pings`.** No agent is auto-nudged on a timer while
   idle — the swarm is purely event-driven off real mail. (If you wanted buddy to
   proactively check in on a slow-onboarding hire, you'd add
-  `periodically_ping_seconds: 86400` to it.)
+  a `pings` cron rule to it.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — mail addressed to you is *held* (never bounced) until you flip it on
   (see §4).
@@ -448,8 +448,8 @@ For the full story, see [`sessions-and-resume.md`](../sessions-and-resume.md).
   every extra edge is another path the new hire's experience can fragment along.
   Keep `user` on **buddy alone**.
 
-- **Make buddy proactive.** Add `periodically_ping_seconds` to buddy with a
-  `periodically_ping_message` like "check whether any onboarding item is overdue;
+- **Make buddy proactive.** Add a daily `pings` rule to buddy with a
+  `message` like "check whether any onboarding item is overdue;
   if so, ask the new hire" to turn the reactive desk into a gentle daily nudger.
 
 ---

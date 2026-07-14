@@ -44,6 +44,17 @@ agents:
     type: claude
     can_talk_to: [security, performance, style, synthesizer, user]
     command: "claude --dangerously-skip-permissions"
+    # Working-hours nudge so a PR never sits half-reviewed. The gate is
+    # event-driven (it moves when you send a PR), but this `pings:` rule pokes
+    # triage once an hour during the workday to chase a specialist that's
+    # lagging. `when_busy: skip` (default) means it's dropped mid-turn, so it
+    # never interrupts an active fan-out/merge.
+    pings:
+      - message: |
+          Working-hours check: if a PR is mid-review and one specialist is
+          lagging, note which lane is outstanding and chase it. If nothing is in
+          flight, do nothing and wait for the next PR.
+        cron: "0 10-17 * * 1-5"       # top of the hour, 10:00-17:59, Mon-Fri
     role: |
       You are TRIAGE, the hub of a parallel PR review gate. You do not write the
       review yourself; you route the work.

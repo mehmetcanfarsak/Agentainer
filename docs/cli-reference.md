@@ -444,6 +444,11 @@ agentainer edit alice -s can_talk_to="dave,user" -c my-swarm.yaml
 agentainer edit dave -s role="reviewer" -s can_talk_to="*" -c my-swarm.yaml
 ```
 
+> `-s key=value` sets scalar (and simple comma-list) fields. Nested structures
+> like a `pings:` schedule (a list of `message`/`cron`/`when_busy` mappings) are
+> edited directly in `agentainer.yaml` — see
+> [`configuration.md` §5 `pings`](configuration.md#pings).
+
 ## `reconcile`
 
 **Purpose:** Start agents present in the config but not running, and stop

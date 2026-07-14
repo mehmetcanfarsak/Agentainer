@@ -192,10 +192,30 @@ Applied to every agent unless overridden.
   rank by severity (blocker > major > minor > nit), attribute each item to its
   reviewer, and lead with a one-line verdict (ship / ship-with-fixes / block).
 
+### `triage`'s scheduled nudge (`pings:`)
+The gate is fundamentally **event-driven** — it moves when you send a PR — but
+`triage` carries one `pings:` rule so a review can't quietly stall on a slow
+specialist:
+
+```yaml
+    pings:
+      - message: |
+          Working-hours check: if a PR is mid-review and one specialist is
+          lagging, note which lane is outstanding and chase it. If nothing is in
+          flight, do nothing and wait for the next PR.
+        cron: "0 10-17 * * 1-5"       # top of the hour, 10:00-17:59, Mon-Fri
+```
+
+Each `pings:` entry is a `message` plus a 5-field `cron`
+(`minute hour day-of-month month day-of-week`, in the host's local time). This
+one fires at the top of every hour from 10:00 to 17:59 on weekdays, injecting a
+`system` nudge that tells `triage` to chase any lagging lane. `when_busy`
+defaults to `skip`, so the nudge is **dropped if it comes due mid-turn** — it
+never interrupts an active fan-out or merge. If you'd rather it fire round the
+clock, widen the hour field (`* * * *` → `0 * * * *`); if you want it to wait
+rather than skip when busy, add `when_busy: queue`.
+
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** The gate is purely event-driven — it moves
-  only when you send a PR. If a specialist were slow you could add a ping to
-  `triage` (`periodically_ping_seconds: 300`) to nudge it.
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — the synthesizer's final review is *held* (never bounced) until you
   flip it on (see §4).

@@ -170,7 +170,7 @@ Applied to every agent unless overridden.
 - **Turn detection:** `claude` → Stop hook.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** The pipeline is purely event-driven off
+- **No `pings`.** The pipeline is purely event-driven off
   real mail — the crawler only moves when you send a target.
 - **No `security`/`performance`/`accessibility` scope.** Explicitly out of scope
   per the design; the crawler's `role:` tells the model to leave page speed,

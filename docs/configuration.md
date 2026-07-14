@@ -115,8 +115,7 @@ agent sets the same field itself**. Agent-level values override `defaults`;
 | `role` | string | `""` | Standing instructions. `first_prompt` is a deprecated alias (warns). |
 | `workdir` | path | `<root>/<name>` | Per-agent working directory (supports placeholders, see §8). |
 | `mail_dir` | path | the agent's `workdir` | Base for the four mailbox folders. See [§5 mail_dir](#mail_dir). |
-| `periodically_ping_seconds` | int | `0` (disabled) | Idle-only ping cadence (minimum). `0` = no pings. |
-| `periodically_ping_message` | string | `""` | Message sent by the periodic ping. |
+| `pings` | list | `[]` (none) | Cron-scheduled pings (per-rule `message` + `cron` + `when_busy`). An agent's own `pings` replaces the default list (no merge). See [§5 pings](#pings). |
 | `env` | mapping | `{}` | Extra environment variables (merged with type defaults, then agent `env`). |
 | `create_workdir` | bool | swarm `create_workdirs` (default `true`) | Create the workdir if missing. |
 | `ready_probe` | bool | `true` | Per-agent health probe for the "silent but alive" case. |
@@ -145,8 +144,10 @@ Agent field resolution (agent value → `defaults` → built-in per-type fallbac
 - `mail_dir`: agent `mail_dir` → `defaults.mail_dir` → the resolved `workdir`.
 - `boot_delay_ms`: agent → `defaults` → type's `boot_delay_ms` → `5000`.
 - `role`: agent `role` → `first_prompt` (deprecated) → `""`.
-- `can_talk_to`, `periodically_ping_*`, `env`, `create_workdir`, `ready_probe`,
-  `busy_check`, `resume_args`, `resume_command`: agent → `defaults` → built-in.
+- `can_talk_to`, `pings`, `env`, `create_workdir`,
+  `ready_probe`, `busy_check`, `resume_args`, `resume_command`: agent →
+  `defaults` → built-in. (`pings` is replaced wholesale — an agent's list does
+  not merge with the `defaults` list.)
 
 ---
 
@@ -234,18 +235,107 @@ to centralize all mailboxes. Supports placeholders (§8).
 prefixing is **invisible to the model** — every nudge and first-prompt states the
 agent's exact computed paths, so custom `mail_dir` and prefixing just work.
 
-### `periodically_ping_seconds` / `periodically_ping_message` — int / string
-Optional idle "cron" for the agent. When `periodically_ping_seconds > 0`, the
-supervisor, on its interval, drops a `system` nudge into the agent's queue if (and
-only if) the agent is **idle** — guards:
+### `pings` — list of cron-scheduled pings {#pings}
 
-- **idle-only** — never pings a busy agent.
+`pings` lets an agent be nudged with a `system` message on a **cron schedule** —
+different messages at different times (working hours vs. nights vs. weekends, say),
+each on its own cron expression. It replaces the old fixed-cadence ping fields
+(`periodically_ping_seconds` / `periodically_ping_message`), which have been
+removed.
+
+The delivery guards still apply to every rule:
+
+- **idle-only by default** — a rule that comes due while the agent is busy is
+  skipped, unless it opts in with `when_busy: queue`.
 - **no pile-up** — a pending/unread ping suppresses the next one.
-- **cadence is a minimum** — pings fire no more often than the interval; they are
-  gated on supervisor ticks, not wall-clock.
+- **due-this-minute** — a rule fires at most once per matching wall-clock minute.
 
-`periodically_ping_message` is the text of that nudge. Default: `0` (disabled) and
-`""`.
+It is an **optional list**, settable per-agent **or** under `defaults:`. An
+agent's own `pings` **fully replaces** the `defaults` list (it does not merge);
+omit `pings` on an agent to inherit the default list unchanged.
+
+#### Schema — each list entry is a mapping
+
+| Key | Required | Type | Default | Meaning |
+|-----|----------|------|---------|---------|
+| `message` | **yes** | string | — | The ping text, delivered to the agent as a `system` message. |
+| `cron` | **yes** | string | — | A standard 5-field cron expression: `minute hour day-of-month month day-of-week`. |
+| `when_busy` | no | `skip` \| `queue` | `skip` | What to do if the rule comes due while the agent is mid-turn. `skip` = drop this firing (keeps a busy agent's mailbox from filling with stale pings). `queue` = enqueue it anyway, so it is waiting when the turn ends. |
+
+#### Cron syntax
+
+The bundled parser ([`lib/cron.py`](../lib/cron.py), zero-dependency) supports
+just enough of standard Vixie-style cron:
+
+| Field | Position | Allowed values |
+|-------|----------|----------------|
+| minute | 1st | `0`–`59` |
+| hour | 2nd | `0`–`23` |
+| day-of-month | 3rd | `1`–`31` |
+| month | 4th | `1`–`12`, or 3-letter names `jan`–`dec` |
+| day-of-week | 5th | `0`–`6` with **Sunday = 0** (`7` is also Sunday), or 3-letter names `sun`–`sat` |
+
+Each field accepts:
+
+- `*` — any value.
+- `*/step` — every `step`th value across the field's range (e.g. `*/30` in the
+  minute field = every 30 minutes).
+- `a-b` — an inclusive range.
+- `a-b/step` — a range with a step.
+- comma lists — e.g. `1,15,30`, and combinations like `20-23,0-7`.
+
+Names (months and days-of-week) are **case-insensitive** (`Mon`, `mon`, `MON`
+all work). Ranges/lists over names work too (`mon-fri`, `sat,sun`).
+
+**Day-of-month vs. day-of-week (the standard Vixie-cron rule):** when **both**
+`day-of-month` and `day-of-week` are restricted (neither is `*`), a time matches
+if **either** matches. When only one is restricted, only that one must match.
+
+> **Local-time caveat.** Cron schedules are evaluated in the **host's local
+> time** — there is deliberately no timezone field and no timezone database
+> (zero dependencies). A rule like `0 9 * * *` fires at 9am *on the server*. If
+> the machine's clock or timezone changes, your schedules move with it.
+
+#### Semantics & guards
+
+- **Due once per minute.** A rule is "due" when its cron matches the current
+  local minute **and** it has not already fired for that wall-clock minute. Each
+  rule is deduped independently, so it fires **at most once per matching minute**
+  even though the supervisor ticks more often.
+- **No pile-up (global).** At most **one** unhandled ping is outstanding at a
+  time across **all** of an agent's rules — while a previous ping is still
+  unread, the next is suppressed.
+- **Overlap resolution.** If multiple rules are due in the same minute, the
+  **first *deliverable* rule in list order wins**. A `when_busy: skip` rule that
+  is blocked because the agent is busy is *passed over* (without being marked
+  fired), so a later rule can still deliver — and the skipped rule can still
+  fire later in the same minute if the turn ends in time.
+- **Delivery.** The ping arrives as a `system` message (like a bounce or ack),
+  so the model self-corrects in-band with no new concept.
+
+#### Validation is fail-fast
+
+A malformed `pings` raises a **config error at load** (naming the agent), so a
+bad schedule is caught immediately — never a silent no-op. You get an error if
+`pings` is not a list, an entry is not a mapping, `message` is missing, `cron`
+is missing, the cron expression is invalid (wrong field count, out-of-range
+value, bad range/step), or `when_busy` is anything other than `skip`/`queue`.
+
+#### Example
+
+```yaml
+agents:
+  - name: dev
+    command: "claude --dangerously-skip-permissions"
+    pings:
+      - message: "Working hours: triage the review queue, then wait for mail."
+        cron: "*/30 9-18 * * 1-5"      # every 30 min, 9am-6pm, Mon-Fri (local time)
+      - message: "Off-hours: only flag anything genuinely on fire."
+        cron: "0 20-23,0-7 * * *"       # top of each hour, evenings + overnight
+        when_busy: queue
+      - message: "Weekend check-in — anything blocked?"
+        cron: "0 12 * * sat,sun"        # noon on weekends
+```
 
 ### `env` — mapping, default `{}`
 Extra environment variables for the agent process. Merged in order:
@@ -410,8 +500,9 @@ agents:
     command: "bash -ic 'chy3'"          # the alias launches claude
     resume_command: "bash -ic 'chy3 --resume {session_id}'"   # CRITICAL
     mail_dir: "/var/mail/{name}"         # keep mail off the workspace
-    periodically_ping_seconds: 600
-    periodically_ping_message: "Any progress to report? Reply, or stay quiet."
+    pings:
+      - cron: "*/10 * * * *"             # every 10 minutes
+        message: "Any progress to report? Reply, or stay quiet."
     env:
       OPENROUTER_API_KEY: "<placeholder>"
 ```

@@ -20,8 +20,10 @@
 #                      user
 #
 #   Hub and spoke: newsgatherer/summarizer/writer only talk to chief; chief is
-#   the only one that talks to user. chief also self-triggers a daily refresh
-#   via periodically_ping_seconds (idle-only, no pile-up -- see the field notes).
+#   the only one that talks to user. chief also self-triggers on a cron schedule
+#   via `pings:` -- a weekday morning briefing plus a lighter weekend check-in,
+#   each delivered as a `system` message at the wall-clock time you set (see the
+#   field notes below the chief agent).
 #
 # Key-free: every `command` is a real CLI, but the swarm also comes up and
 # routes mail with NO API keys if you swap each `command` for a mock bash loop
@@ -42,16 +44,26 @@ agents:
     type: claude
     can_talk_to: [newsgatherer, summarizer, writer, user]
     command: "claude --dangerously-skip-permissions"
-    # Self-triggers a daily refresh. The ping only fires while idle and only if
-    # no unhandled ping is already queued, so the digest refreshes on a cadence
-    # without piling up. It is a `system` message addressed to chief; chief
-    # decides whether to rebuild the digest or ignore it. 86400s = 24h.
-    periodically_ping_seconds: 86400
-    periodically_ping_message: |
-      It is time for your scheduled daily briefing refresh. If you have no other
-      pending task, gather fresh items on the standing topics (your last
-      instructions from the user) and rebuild the digest, then deliver it to
-      user. If you are already mid-task, ignore this and continue.
+    # Self-triggers the digest on a cron schedule. Each rule is a `system`
+    # message pasted into chief's queue at the given wall-clock time (host LOCAL
+    # time, standard 5-field cron: minute hour day-of-month month day-of-week).
+    # `when_busy` defaults to `skip`, so a ping that comes due while chief is
+    # mid-task is dropped rather than stacked -- the digest refreshes on cadence
+    # without piling up reminders. chief decides whether to rebuild or ignore.
+    pings:
+      # Weekday morning briefing: rebuild the digest at 07:00, Monday-Friday.
+      - message: |
+          It is time for your weekday morning briefing. If you have no other
+          pending task, gather fresh items on the standing topics (your last
+          instructions from the user) and rebuild the digest, then deliver it
+          to user. If you are already mid-task, ignore this and continue.
+        cron: "0 7 * * 1-5"        # 07:00, Mon-Fri
+      # Lighter weekend check-in: one late-morning digest on Sat & Sun.
+      - message: |
+          Weekend check-in. If you are idle, rebuild a lighter digest on the
+          standing topics (skip anything strictly work-related) and deliver it
+          to user. Ignore this if you are mid-task.
+        cron: "0 9 * * sat,sun"    # 09:00, Saturday & Sunday (day names)
     role: |
       You are the CHIEF of a personal daily-briefing service. You assemble a
       morning digest for the human from multiple sources. You do not gather or

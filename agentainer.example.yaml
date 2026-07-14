@@ -76,11 +76,12 @@ agents:
     command: "claude --dangerously-skip-permissions"
     role: "You are a reviewer. Read the developer's output and critique it."
 
-  # An optional idle pinger: every N seconds, if idle, the orchestrator drops a
-  # `system` nudge into this agent's queue (idle-only, no pile-up, min-cadence).
+  # An optional cron pinger: on each matching minute, if idle, the orchestrator
+  # drops a `system` nudge into this agent's queue (idle-only, no pile-up).
   # - name: researcher
   #   type: gemini
   #   can_talk_to: [orchestrator]
   #   command: "bash -c 'while true; do read -r l || sleep 1; done'"
-  #   periodically_ping_seconds: 600
-  #   periodically_ping_message: "Any progress to report? Reply, or stay quiet."
+  #   pings:
+  #     - cron: "*/10 * * * *"    # every 10 minutes
+  #       message: "Any progress to report? Reply, or stay quiet."

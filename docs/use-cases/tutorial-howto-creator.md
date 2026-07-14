@@ -169,7 +169,7 @@ Applied to every agent unless the agent overrides them.
 - **Turn detection:** `codex` → a `notify` program (its hook), installed at `up`.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** No agent is auto-nudged on a timer while
+- **No `pings`.** No agent is auto-nudged on a timer while
   idle — the pipeline is purely event-driven off real mail.
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — mail addressed to you is *held* (never bounced) until you flip it on

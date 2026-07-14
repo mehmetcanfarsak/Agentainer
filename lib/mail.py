@@ -42,6 +42,7 @@ from pathlib import Path
 import config as cfgmod  # noqa: E402
 from config import Agent, SwarmConfig  # noqa: E402
 
+import cron  # noqa: E402
 import log  # noqa: E402
 import lock  # noqa: E402
 import turn  # noqa: E402
@@ -597,19 +598,49 @@ def process_read_folder(cfg: SwarmConfig, agent_name: str) -> int:
     return count
 
 
+def _due_cron_ping(agent: Agent, state: dict, busy: bool):
+    """Return the message of the first *deliverable* ``pings`` rule due now, else None.
+
+    "Due" = the rule's cron matches the current local minute AND that rule has
+    not already fired for this wall-clock minute (deduped in *state* by rule
+    index, so a rule can't re-fire on every supervisor tick within its minute,
+    and different rules keep independent last-fired minutes). A due rule is only
+    *deliverable* if the agent is idle, or the rule opts in with
+    ``when_busy="queue"``; a ``when_busy="skip"`` rule that comes due while the
+    agent is busy is passed over *without* being marked fired, so it can still
+    fire later in the same minute if the turn ends in time. First deliverable
+    match in list order wins. Mutates *state*; the caller persists on send.
+    """
+    now_local = time.localtime()
+    cur_min = int(time.time() // 60)
+    fired = dict(state.get("rule_min") or {})
+    for idx, rule in enumerate(agent.pings):
+        key = str(idx)
+        if not cron.matches(rule.schedule, now_local) or fired.get(key) == cur_min:
+            continue
+        if busy and rule.when_busy == "skip":
+            continue  # don't fill a busy agent's mailbox; leave it for an idle tick
+        fired[key] = cur_min
+        state["rule_min"] = fired
+        return rule.message
+    return None
+
+
 def maybe_ping(cfg: SwarmConfig, agent_name: str) -> bool:
     """Inject a periodic ``system`` ping into *agent_name*'s queue, respecting
-    the three §10 guards. Returns True if a ping was injected.
+    the §10 guards. Returns True if a ping was injected.
 
-    Guards: (a) idle-only -- skip if busy; (b) no-pile-up -- skip if an unhandled
-    ping marker already sits in the queue/inbox; (c) cadence-is-minimum -- skip
-    unless ``periodically_ping_seconds`` has elapsed since the last ping.
+    Pings are driven entirely by the agent's cron ``pings`` rules and gated by:
+    (a) idle-only by default -- a rule that comes due while the agent is busy is
+    skipped unless it opts in with ``when_busy="queue"``; (b) no-pile-up -- skip
+    if an unhandled ping marker already sits in the queue/inbox; (c) due-this-
+    minute -- a rule whose cron matches the current minute and hasn't fired yet
+    (see ``_due_cron_ping``). An agent with no ``pings`` never pings.
     """
     agent = cfg.get(agent_name)
-    if agent.periodically_ping_seconds <= 0:
+    if not agent.pings:
         return False
-    if turn.busy_info(cfg, agent) is not None:
-        return False
+    busy = turn.busy_info(cfg, agent) is not None
 
     # (b) no-pile-up: a still-unhandled ping is a file whose name starts with the marker.
     queue = cfg.queue_dir / agent_name
@@ -620,17 +651,16 @@ def maybe_ping(cfg: SwarmConfig, agent_name: str) -> bool:
                 if f.name.startswith(PING_MARKER):
                     return False
 
-    # (c) cadence-is-minimum.
+    # (c) schedule: the first cron rule due this minute (each rule carries its
+    # own busy policy).
     state = _load_run_json(cfg, f"{agent_name}.ping.json")
-    last = state.get("last_ping", 0.0)
-    now = time.time()
-    if now - last < agent.periodically_ping_seconds:
+    message = _due_cron_ping(agent, state, busy)
+    if message is None:
         return False
 
     msg_id = PING_MARKER + uuid.uuid4().hex[:8]
-    text = stamp_message(agent.periodically_ping_message, "system", agent_name, msg_id)
+    text = stamp_message(message, "system", agent_name, msg_id)
     enqueue(cfg, agent_name, text, msg_id)
-    state["last_ping"] = now
     _save_run_json(cfg, f"{agent_name}.ping.json", state)
     log.log_event(cfg, agent_name, "ping")
     return True

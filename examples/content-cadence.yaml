@@ -1,0 +1,148 @@
+# =============================================================================
+# 🗓️ Content cadence -- an editorial team that runs on a WEEKLY rhythm.
+#
+# The other `pings:` examples fire many times a day; this one is the opposite --
+# the showcase for cron as a *weekly calendar*. Nothing here runs every hour.
+# Instead, each weekday owns a phase of the publishing cycle: plan on Monday,
+# draft midweek, review Wednesday, schedule Friday -- plus a monthly look-back on
+# the 1st. It is how you'd actually run a content shop, encoded in `cron`. Bring
+# it up once and let the week drive it:
+#
+#   cp examples/content-cadence.yaml my-cadence.yaml
+#   agentainer up             -c my-cadence.yaml
+#   agentainer user available -c my-cadence.yaml   # so the editor can reach you
+#   # ...then let the calendar run. Nudge `editor` any time to change direction.
+#   agentainer down           -c my-cadence.yaml
+#
+# Shape: an EDITOR hub owns the calendar and the human-facing surface. A WRITER
+# produces drafts and a PROMOTER prepares distribution. Each has its own day:
+#
+#   writer ────┐
+#              ├── editor ── user   (weekly plan, publish-ready pack, monthly recap)
+#   promoter ──┘
+#
+#   Hub and spoke: writer/promoter only talk to editor; editor is the only one
+#   that reaches user. The week's phases are cron rules, so the pipeline advances
+#   on the calendar with no human `send` -- though you can always nudge the
+#   editor to steer the topic.
+#
+# CRON RECAP: each `pings` entry is `message` + `cron` (+ optional `when_busy`).
+# `cron` is 5-field `minute hour day-of-month month day-of-week`, host LOCAL
+# time. Day-of-week takes NAMES (`mon`..`sun`); day-of-month picks calendar days
+# (`1` = the 1st). `when_busy: skip` (default) drops a phase-nudge that lands
+# mid-task; `when_busy: queue` makes it wait -- used here for the Friday publish
+# so a release is never skipped.
+#
+# Key-free: every `command` is a real CLI, but the swarm comes up and fires its
+# scheduled pings with NO API keys if you swap each `command` for a mock bash
+# loop (see headers in examples/quickstart.yaml). Treat `command` strings as
+# sensitive; they may embed keys.
+# =============================================================================
+
+swarm:
+  name: cadence
+  root: ./cadence-workspace
+
+defaults:
+  capture: none              # claude/codex are auto-upgraded to their hook at up
+  can_talk_to: []            # tightened per agent below
+
+agents:
+  - name: editor
+    type: claude
+    can_talk_to: [writer, promoter, user]
+    command: "claude --dangerously-skip-permissions"
+    # The editorial calendar, one rule per phase of the week. Each carries a
+    # different message, so the editor knows which phase it is from the ping
+    # text alone -- no shared state to track across the week.
+    pings:
+      # Monday 09:00 -- plan the week and brief the writer.
+      - message: |
+          Weekly planning. Decide this week's topics/angles from the user's
+          standing goals, write a short brief for each, and send them to writer.
+          If anything needs a decision from the user, ask via outbox/user/ first.
+        cron: "0 9 * * mon"             # 09:00 every Monday
+      # Wednesday 14:00 -- collect and review the midweek drafts.
+      - message: |
+          Midweek review. Ask writer for the drafts in progress, review each for
+          angle and clarity, and send back concrete revision notes. Flag anything
+          slipping so it can be reslotted before Friday.
+        cron: "0 14 * * wed"            # 14:00 every Wednesday
+      # Friday 15:00 -- assemble the publish-ready pack. `queue` so a release is
+      # never dropped just because the editor is mid-review.
+      - message: |
+          Publish day. Assemble the finished pieces into a publish-ready pack,
+          hand it to promoter to prepare distribution, and post the week's
+          shipped list to user.
+        cron: "0 15 * * fri"            # 15:00 every Friday
+        when_busy: queue
+      # 1st of the month, 10:00 -- a look-back that isn't tied to a weekday.
+      - message: |
+          Monthly recap. Ask promoter which pieces performed and summarize the
+          month for user: what shipped, what landed, and one focus for next
+          month. This is a review, not a publish -- keep it short.
+        cron: "0 10 1 * *"              # 10:00 on the 1st of every month
+    role: |
+      You are the EDITOR-IN-CHIEF of a small content team running on a weekly
+      calendar. You own the plan and you are the ONLY agent that talks to the
+      human (user). You do not write or distribute -- you direct the cycle:
+        (1) On the Monday planning ping, turn the user's standing goals into
+            per-piece briefs and delegate them to writer.
+        (2) On the Wednesday review ping, collect drafts from writer and return
+            specific revision notes.
+        (3) On the Friday publish ping, assemble the finished pieces, hand the
+            pack to promoter, and report the week's shipped list to user.
+        (4) On the monthly recap, fold promoter's performance notes into a short
+            month-in-review for user.
+      Keep the human-facing surface to yourself -- spokes never talk to user.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first to see who they are and whether they're
+      available) and finish your turn. You may message the agents in your
+      can_talk_to: writer, promoter, user.
+
+  - name: writer
+    type: claude
+    can_talk_to: [editor]
+    command: "claude --dangerously-skip-permissions"
+    # The writer's own drafting days -- Tuesday and Thursday mornings -- so
+    # there's fresh material ready for the editor's Wednesday review and Friday
+    # publish. Same hub, a different beat of the same week.
+    pings:
+      - message: |
+          Drafting block. Advance the pieces the editor briefed you on: turn each
+          brief into a solid draft (or push a rough one closer to done). If a
+          brief is unclear or you're blocked, ask the editor rather than guessing.
+        cron: "0 9 * * tue,thu"         # 09:00 Tuesday & Thursday
+    role: |
+      You are the WRITER. Given per-piece briefs from the editor, produce clear,
+      well-structured drafts in the requested voice and length. On your drafting
+      blocks, move every in-flight piece forward and hand the current state back
+      to the editor; when the editor returns revision notes, apply them and
+      return the revised draft. Ask when a brief is ambiguous -- don't invent
+      scope. You report ONLY to the editor.
+      MAILBOX: read new mail in inbox/, act, then move it to read/. To reply,
+      write a file into outbox/editor/ (read outbox/editor/about.md first) and
+      finish your turn.
+
+  - name: promoter
+    type: codex
+    can_talk_to: [editor]
+    command: "codex --yolo"
+    # The promoter's day is Friday afternoon, right after the editor assembles
+    # the pack -- prep distribution while the pieces are fresh.
+    pings:
+      - message: |
+          Distribution prep. If the editor has handed you this week's publish
+          pack, prepare the distribution assets (social posts, newsletter blurb,
+          scheduling notes) for each piece and send them back to the editor.
+        cron: "30 15 * * fri"           # 15:30 every Friday (after the 15:00 pack)
+    role: |
+      You are the PROMOTER. Given the editor's publish-ready pack, prepare
+      distribution for each piece: platform-appropriate social copy, a newsletter
+      blurb, and suggested scheduling. For the monthly recap, report which pieces
+      performed and any distribution learnings. Keep assets ready-to-post and
+      on-brand. You report ONLY to the editor.
+      MAILBOX: read new mail in inbox/, act, then move it to read/. To reply,
+      write a file into outbox/editor/ (read outbox/editor/about.md first) and
+      finish your turn.

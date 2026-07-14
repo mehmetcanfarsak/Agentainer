@@ -153,10 +153,10 @@ Applied to every agent unless the agent overrides them.
 - **Turn detection:** `claude` → Stop hook.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** None of the four agents has a periodic ping
+- **No `pings`.** None of the four agents has a periodic ping
   configured, so no agent is auto-nudged on a timer while idle — the pipeline is
   purely event-driven off real mail. (If you wanted the editor to poke a slow
-  writer, you'd add `periodically_ping_seconds: 300` to it.)
+  writer, you'd add a `pings` cron rule to it.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — mail addressed to you is *held* (never bounced) until you flip it on
   (see §4).
@@ -408,8 +408,8 @@ For the full story, see [`sessions-and-resume.md`](../sessions-and-resume.md).
   Remember the graph is the contract: every name must exist, no agent may list
   itself, and `system` is never a valid recipient.
 
-- **Make it periodic.** Add `periodically_ping_seconds: 604800` (a week) plus a
-  `periodically_ping_message` like "Draft this week's issue from the last brief" to
+- **Make it periodic.** Add a weekly `pings` rule (e.g. `cron: "0 9 * * mon"`) with a
+  `message` like "Draft this week's issue from the last brief" to
   the `editor` so the swarm self-starts each cycle (you'd still feed it a fresh
   theme as needed).
 

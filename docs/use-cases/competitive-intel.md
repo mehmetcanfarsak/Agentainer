@@ -101,6 +101,9 @@ agents:
     type: claude
     can_talk_to: [researcher_a, researcher_b, researcher_c, writer, user]
     command: "claude --dangerously-skip-permissions"
+    pings:
+      - message: "Monday refresh: re-run the standing competitor set and deliver an updated battlecard."
+        cron: "0 9 * * mon"       # 09:00 every Monday (day name)
     role: |
       You are the COMPETITIVE INTELLIGENCE ANALYST and the hub ...
   - name: researcher_a
@@ -160,6 +163,14 @@ Applied to every agent unless overridden.
   notified"), so the analyst waits for your brief instead of proactively mailing
   peers. The role also carries a **MAILBOX** reminder that restates the two verbs
   and four folders — the model never has to remember the protocol.
+- **`pings:`** — a single **weekly cron refresh**: `0 9 * * mon` fires a `system`
+  message at 09:00 every Monday (the `mon` day-name; `1` works too), telling the
+  analyst to re-run the *standing* competitor set from your last brief and deliver
+  a fresh battlecard — so the intel doesn't quietly go stale between asks. The rule
+  uses the default `when_busy: skip`, so if the analyst is already mid-analysis
+  when Monday rolls around, the refresh is dropped rather than stacked onto a live
+  run. (Each `pings` entry is just a `message` + a 5-field `cron`, evaluated in the
+  host's local time.)
 - **Turn detection:** `claude` → a **Stop hook** (installed automatically at `up`).
 
 ### `researcher_a` / `researcher_b` / `researcher_c` (type: `claude`)
@@ -182,9 +193,10 @@ Applied to every agent unless overridden.
   surface disagreements rather than averaging them.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** No agent is auto-nudged on a timer — the
-  pipeline is purely event-driven off real mail. (If you wanted the analyst to poke
-  a slow researcher, you'd add `periodically_ping_seconds: 300` to it.)
+- **No cron pings on the researchers or the writer.** Only the `analyst` self-
+  triggers (the weekly Monday refresh above); the rest of the pipeline is purely
+  event-driven off real mail. (If you wanted to poke a slow researcher on a timer,
+  you'd give *it* its own `pings:` rule.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — mail addressed to you is *held* (never bounced) until you flip it on
   (see §5).

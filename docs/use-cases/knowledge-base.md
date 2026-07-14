@@ -156,7 +156,7 @@ Applied to every agent unless the agent overrides them.
   `TOPICS.md`, `QA.md`.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** None of the four agents has a periodic ping
+- **No `pings`.** None of the four agents has a periodic ping
   configured, so no agent is auto-nudged on a timer while idle — the build is
   purely event-driven off real mail. (If a stage stalled, you'd add a ping to the
   relevant worker, or nudge it by hand — see §5.)

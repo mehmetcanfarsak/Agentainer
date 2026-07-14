@@ -288,9 +288,9 @@ where workers talk to the hub and to specific peers but never to `user`.)
   agent lists `user`, several agents can independently decide to "answer the
   human," and you get duplicate, possibly contradictory, replies in your inbox.
   The ACL makes this a one-line config decision; resist the urge to widen it.
-- **Use `periodically_ping_seconds` sparingly.** A ping is a `system` message
+- **Use `pings` sparingly.** A ping is a `system` message
   injected into an idle agent's queue (guards: idle-only, no-pile-up,
-  cadence-is-minimum). It is a liveness nudge, not a task driver — set it only
+  once-per-minute). It is a liveness nudge, not a task driver — set it only
   for agents that genuinely go quiet mid-task, and keep the interval large.
 - **The `system` mailbox carries errors and nudges.** Bounces, delivery acks,
   read receipts and periodic pings all arrive `From: system`. That is by design:

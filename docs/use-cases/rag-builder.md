@@ -166,8 +166,8 @@ shared-workdir rules in
 lines at your real corpus checkout to build in place.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`** — purely event-driven; add
-  `periodically_ping_seconds: 300` to an agent if you want timer nudges.
+- **No `pings`** — purely event-driven; add
+  a `pings` cron rule to an agent if you want timer nudges.
 - **No `user` availability set** — the `user` mailbox defaults to **away**, so
   mail to you is *held* until you flip it on (see §4).
 - **No `telegram:`** — bridge off by default; enable in `swarm:` to mirror the

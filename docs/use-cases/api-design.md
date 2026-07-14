@@ -211,7 +211,7 @@ To point both at your real service repo, set each `workdir` to the same absolute
 [`custom-workspace.md`](./custom-workspace.md).
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** The pipeline is purely event-driven off real
+- **No `pings`.** The pipeline is purely event-driven off real
   mail — `lead` moves only when you send a goal, and each stage advances when the
   prior one's mail arrives. No agent self-starts on a timer.
 - **No `user` availability set in the file.** The `user` mailbox defaults to

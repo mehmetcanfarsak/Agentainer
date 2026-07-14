@@ -29,8 +29,7 @@ import mail as mailmod
 # --------------------------------------------------------------------------
 
 
-def make_agent(cfg, name, can_talk_to, type="claude", role=None,
-               ping_seconds=0, ping_message=""):
+def make_agent(cfg, name, can_talk_to, type="claude", role=None, pings=None):
     return Agent(
         name=name,
         type=type,
@@ -42,8 +41,7 @@ def make_agent(cfg, name, can_talk_to, type="claude", role=None,
         role=role if role is not None else f"role-of-{name}",
         can_talk_to=list(can_talk_to),
         mail_dir=cfg.root / name,
-        periodically_ping_seconds=ping_seconds,
-        periodically_ping_message=ping_message,
+        pings=pings if pings is not None else [],
     )
 
 
@@ -614,21 +612,38 @@ def test_process_read_folder_auto_archive_skips_handled(tmp_runtime):
 # --------------------------------------------------------------------------
 
 
+import cron as cronmod  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+_MON_9 = time.struct_time((2024, 1, 1, 9, 0, 0, 0, 1, -1))  # Monday 09:00
+
+
+def _rule(msg, expr, when_busy="skip"):
+    return cfgmod.PingRule(
+        message=msg, cron=expr, schedule=cronmod.parse(expr), when_busy=when_busy
+    )
+
+
 def test_maybe_ping_disabled(tmp_runtime):
-    alice = make_agent(tmp_runtime, "alice", [], ping_seconds=0)
+    # No `pings` configured -> the agent never pings.
+    alice = make_agent(tmp_runtime, "alice", [])
     cfg = build_cfg(tmp_runtime, [alice])
     assert mailmod.maybe_ping(cfg, "alice") is False
 
 
 def test_maybe_ping_busy_guard(tmp_runtime):
-    alice = make_agent(tmp_runtime, "alice", [], ping_seconds=30, ping_message="ping")
+    # A due skip-rule is passed over while the agent is busy.
+    alice = make_agent(tmp_runtime, "alice", [], pings=[_rule("ping", "* * * * *")])
     cfg = build_cfg(tmp_runtime, [alice])
-    with mock.patch.object(turnmod, "busy_info", return_value={"since": 1}):
+    with mock.patch.object(turnmod, "busy_info", return_value={"since": 1}), \
+            mock.patch.object(mailmod, "time") as mt:
+        mt.localtime.return_value = _MON_9
+        mt.time.return_value = 1000.0
         assert mailmod.maybe_ping(cfg, "alice") is False
 
 
 def test_maybe_ping_pileup_in_queue(tmp_runtime):
-    alice = make_agent(tmp_runtime, "alice", [], ping_seconds=30, ping_message="ping")
+    alice = make_agent(tmp_runtime, "alice", [], pings=[_rule("ping", "* * * * *")])
     cfg = build_cfg(tmp_runtime, [alice])
     mailmod.init_mailboxes(cfg)
     _queue(cfg, "alice", mailmod.PING_MARKER + "xyz.txt", "old ping")
@@ -636,36 +651,74 @@ def test_maybe_ping_pileup_in_queue(tmp_runtime):
 
 
 def test_maybe_ping_pileup_in_inbox(tmp_runtime):
-    alice = make_agent(tmp_runtime, "alice", [], ping_seconds=30, ping_message="ping")
+    alice = make_agent(tmp_runtime, "alice", [], pings=[_rule("ping", "* * * * *")])
     cfg = build_cfg(tmp_runtime, [alice])
     mailmod.init_mailboxes(cfg)
     (cfg.mail_paths(alice).inbox / (mailmod.PING_MARKER + "xyz.txt")).write_text("old ping")
     assert mailmod.maybe_ping(cfg, "alice") is False
 
 
-def test_maybe_ping_cadence_guard(tmp_runtime):
-    alice = make_agent(tmp_runtime, "alice", [], ping_seconds=10, ping_message="ping")
+def test_maybe_ping_cron_fires(tmp_runtime):
+    alice = make_agent(tmp_runtime, "alice", [], pings=[_rule("triage now", "* * * * *")])
     cfg = build_cfg(tmp_runtime, [alice])
-    mailmod._save_run_json(cfg, "alice.ping.json", {"last_ping": 995.0})
-    with mock.patch.object(mailmod, "time") as mtime:
-        mtime.time.return_value = 1000.0
-        assert mailmod.maybe_ping(cfg, "alice") is False
-
-
-def test_maybe_ping_success(tmp_runtime):
-    alice = make_agent(tmp_runtime, "alice", [], ping_seconds=10, ping_message="do a thing")
-    cfg = build_cfg(tmp_runtime, [alice])
-    mailmod._save_run_json(cfg, "alice.ping.json", {"last_ping": 0.0})
-    with mock.patch.object(mailmod, "time") as mtime:
-        mtime.time.return_value = 1000.0
-        mtime.time_ns.return_value = 1_000_000_000_000_000_000  # enqueue's mtime stamp
+    with mock.patch.object(turnmod, "busy_info", return_value=None), \
+            mock.patch.object(mailmod, "time") as mt:
+        mt.localtime.return_value = _MON_9
+        mt.time.return_value = 1000.0
+        mt.time_ns.return_value = 1_000_000_000_000_000_000
         assert mailmod.maybe_ping(cfg, "alice") is True
     queued = list((cfg.queue_dir / "alice").iterdir())
-    assert len(queued) == 1
-    assert queued[0].name.startswith(mailmod.PING_MARKER)
-    assert "From: system" in queued[0].read_text()
-    assert mailmod._load_run_json(cfg, "alice.ping.json")["last_ping"] == 1000.0
+    assert len(queued) == 1 and queued[0].name.startswith(mailmod.PING_MARKER)
+    assert "triage now" in queued[0].read_text()
+    state = mailmod._load_run_json(cfg, "alice.ping.json")
+    assert state["rule_min"]["0"] == int(1000.0 // 60)
     assert any(e["kind"] == "ping" for e in read_jsonl(cfg.log_dir / "alice.jsonl"))
+
+
+def test_maybe_ping_cron_not_due(tmp_runtime):
+    # Fires only at 00:00 on Jan 1; the mocked local time is 09:00 -> hour miss.
+    alice = make_agent(tmp_runtime, "alice", [], pings=[_rule("x", "0 0 1 1 *")])
+    cfg = build_cfg(tmp_runtime, [alice])
+    with mock.patch.object(turnmod, "busy_info", return_value=None), \
+            mock.patch.object(mailmod, "time") as mt:
+        mt.localtime.return_value = _MON_9
+        mt.time.return_value = 1000.0
+        assert mailmod.maybe_ping(cfg, "alice") is False
+    assert not list((cfg.queue_dir / "alice").iterdir()) if (cfg.queue_dir / "alice").exists() else True
+
+
+def test_due_cron_ping_busy_skip_is_dropped():
+    agent = SimpleNamespace(pings=[_rule("s", "* * * * *", "skip")])
+    # Busy -> a skip rule is passed over WITHOUT being marked fired...
+    state = {}
+    assert mailmod._due_cron_ping(agent, state, busy=True) is None
+    assert state == {}
+    # ...so it can still fire on a later idle tick in the same minute.
+    assert mailmod._due_cron_ping(agent, state, busy=False) == "s"
+
+
+def test_due_cron_ping_busy_queue_still_fires():
+    agent = SimpleNamespace(pings=[_rule("q", "* * * * *", "queue")])
+    assert mailmod._due_cron_ping(agent, {}, busy=True) == "q"
+
+
+def test_due_cron_ping_dedup_same_minute():
+    agent = SimpleNamespace(pings=[_rule("m", "* * * * *")])
+    state = {}
+    with mock.patch.object(mailmod, "time") as mt:
+        mt.localtime.return_value = _MON_9
+        mt.time.return_value = 1000.0
+        assert mailmod._due_cron_ping(agent, state, busy=False) == "m"
+        assert mailmod._due_cron_ping(agent, state, busy=False) is None
+
+
+def test_due_cron_ping_first_deliverable_wins():
+    # Rule 0 (skip) is due but the agent is busy, so rule 1 (queue) delivers.
+    agent = SimpleNamespace(pings=[
+        _rule("first", "* * * * *", "skip"),
+        _rule("second", "* * * * *", "queue"),
+    ])
+    assert mailmod._due_cron_ping(agent, {}, busy=True) == "second"
 
 
 # --------------------------------------------------------------------------

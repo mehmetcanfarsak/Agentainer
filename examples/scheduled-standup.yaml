@@ -1,0 +1,126 @@
+# =============================================================================
+# ⏰ Scheduled standup -- a swarm that RUNS ITSELF on the clock.
+#
+# Every other example waits for you to `send` something. This one is the
+# showcase for per-agent `pings:` -- cron-scheduled `system` nudges that make the
+# swarm wake up, do a round of work, and go quiet again, with no human in the
+# loop. Bring it up once and leave it running:
+#
+#   cp examples/scheduled-standup.yaml my-standup.yaml
+#   agentainer up            -c my-standup.yaml
+#   agentainer user available -c my-standup.yaml   # so the digest reaches you
+#   # ...then walk away. The schedules below do the rest.
+#   agentainer down          -c my-standup.yaml
+#
+# Shape: a FACILITATOR hub runs an async daily standup. Two teammate agents
+# (eng, design) each get their OWN early-morning reminder to prep an update; the
+# facilitator then kicks off the standup, collects the updates, and posts a
+# digest to you. Different agents, different schedules -- that's the whole point.
+#
+#   eng ─┐
+#        ├── facilitator ── user   (posts the standup digest + weekly retro)
+#   design ┘
+#
+#   Hub and spoke: eng/design only talk to facilitator; facilitator is the only
+#   one that talks to user. Nobody sends anything until a `pings:` rule (or you)
+#   nudges them -- so the swarm is genuinely self-driving.
+#
+# CRON RECAP: each `pings` entry is `message` + `cron` (+ optional `when_busy`).
+# `cron` is standard 5-field `minute hour day-of-month month day-of-week`,
+# evaluated in the host's LOCAL time. `when_busy: skip` (default) drops a ping
+# that comes due mid-turn; `when_busy: queue` makes it wait instead.
+#
+# Key-free: every `command` is a real CLI, but the swarm comes up and fires its
+# scheduled pings with NO API keys if you swap each `command` for a mock bash
+# loop (see headers in examples/quickstart.yaml). Treat `command` strings as
+# sensitive; they may embed keys.
+# =============================================================================
+
+swarm:
+  name: standup
+  root: ./standup-workspace
+
+defaults:
+  capture: none              # claude/codex are auto-upgraded to their hook at up
+  can_talk_to: []            # tightened per agent below
+
+agents:
+  - name: facilitator
+    type: claude
+    can_talk_to: [eng, design, user]
+    command: "claude --dangerously-skip-permissions"
+    # The hub's schedule: a weekday standup kickoff, an end-of-day wrap, and a
+    # Friday-afternoon weekly retro. Each is a `system` message at the given
+    # wall-clock time. `when_busy: skip` (default) keeps a kickoff from stacking
+    # if the facilitator is still finishing the previous round.
+    pings:
+      # Weekday standup kickoff: ask each teammate for today's update at 09:15.
+      - message: |
+          Standup time. Ask eng and design for today's update (yesterday /
+          today / blockers). When both reply, assemble a short digest and post
+          it to user. If you're already mid-standup, ignore this.
+        cron: "15 9 * * 1-5"          # 09:15, Mon-Fri
+      # End-of-day wrap: what actually shipped, what slipped, at 17:30 weekdays.
+      - message: |
+          End-of-day wrap: ask eng and design what shipped vs. slipped today,
+          then post a one-paragraph wrap to user.
+        cron: "30 17 * * 1-5"         # 17:30, Mon-Fri
+      # Weekly retro: Friday 16:00 -- a lighter, look-back-at-the-week prompt.
+      - message: |
+          Weekly retro: ask eng and design for one win, one miss, and one thing
+          to change next week. Fold it into a short retro note for user.
+        cron: "0 16 * * fri"          # 16:00 every Friday (day name)
+    role: |
+      You are the FACILITATOR of an async daily standup. You do not do the work
+      being reported -- you run the ceremony. Your team: eng and design, each of
+      whom reports their own status to you.
+      When a `system` ping tells you it's standup time (or wrap, or retro),
+      message eng and design with the exact questions for that ceremony, wait for
+      both to reply, then assemble a short, skimmable digest and post it to user.
+      Keep it tight -- a human skims this between meetings. You are the only agent
+      who talks to user; eng and design report only to you.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first to see who they are and whether they're
+      available) and finish your turn. You may message the agents in your
+      can_talk_to: eng, design, user.
+
+  - name: eng
+    type: claude
+    can_talk_to: [facilitator]
+    command: "claude --dangerously-skip-permissions"
+    # Eng's OWN early nudge -- 15 minutes before the facilitator's kickoff -- to
+    # jot down an update while it's fresh. Different agent, different schedule.
+    pings:
+      - message: |
+          Prep your standup: jot down what you finished yesterday, what you're on
+          today, and any blockers, so you're ready when the facilitator asks.
+        cron: "0 9 * * 1-5"           # 09:00, Mon-Fri (before the 09:15 kickoff)
+    role: |
+      You are ENG, an engineer on the team. When the facilitator asks for a
+      standup, wrap, or retro update, reply with your status in that format
+      (yesterday / today / blockers, or shipped / slipped, or win / miss /
+      change) -- concrete and brief, from your own working notes. Call out real
+      blockers plainly. You report ONLY to the facilitator.
+      MAILBOX: read new mail in inbox/, act, then move it to read/. To reply,
+      write a file into outbox/facilitator/ (read outbox/facilitator/about.md
+      first) and finish your turn.
+
+  - name: design
+    type: codex
+    can_talk_to: [facilitator]
+    command: "codex --yolo"
+    # Design gets the same early reminder, on the same weekday cadence.
+    pings:
+      - message: |
+          Prep your standup: note what you shipped, what you're designing today,
+          and anything you're blocked or waiting on, ready for the facilitator.
+        cron: "0 9 * * 1-5"           # 09:00, Mon-Fri (before the 09:15 kickoff)
+    role: |
+      You are DESIGN, the designer on the team. When the facilitator asks for a
+      standup, wrap, or retro update, reply with your status in that format --
+      concrete and brief, from your own working notes. Flag anything you need
+      from eng or the team to keep moving. You report ONLY to the facilitator.
+      MAILBOX: read new mail in inbox/, act, then move it to read/. To reply,
+      write a file into outbox/facilitator/ (read outbox/facilitator/about.md
+      first) and finish your turn.

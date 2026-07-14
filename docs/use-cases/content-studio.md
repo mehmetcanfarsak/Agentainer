@@ -166,10 +166,10 @@ Applied to every agent unless the agent overrides them.
 - **Turn detection:** `codex` → a `notify` program (its hook), installed at `up`.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** None of the four agents has a periodic ping
+- **No `pings`.** None of the four agents has a periodic ping
   configured, so no agent is auto-nudged on a timer while idle — the studio is
   purely event-driven off real mail. (If you wanted the editor to poke a slow
-  writer, you'd add `periodically_ping_seconds: 300` to it.)
+  writer, you'd add a `pings` cron rule to it.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — mail addressed to you is *held* (never bounced) until you flip it on
   (see §4).
@@ -443,7 +443,7 @@ The studio is a starter — a few common forks:
   trusted pipelines. The ACL is the contract; tighten or loosen deliberately.
 
 - **Add periodic pings.** If you hand the editor a big topic and one specialist
-  goes quiet, add `periodically_ping_seconds: 300` to that specialist so the
+  goes quiet, add a `pings` cron rule to that specialist so the
   orchestrator nudges it on a timer instead of waiting on a stuck turn.
 
 - **Run the delegation pattern more generally.** The editor-as-hub is the

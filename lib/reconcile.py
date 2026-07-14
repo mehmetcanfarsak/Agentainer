@@ -313,7 +313,10 @@ def edit_agent(cfg, name, **fields) -> "cfgmod.SwarmConfig":
     for a in raw.get("agents") or []:
         if str(a.get("name")) == name:
             for k, v in fields.items():
-                a[k] = _coerce_field(k, str(v))
+                # `pings` is a structured list of {message,cron,when_busy}; write it
+                # through verbatim (the loader validates it). Everything else is a
+                # scalar arriving as a string, coerced to its typed value.
+                a[k] = v if k == "pings" else _coerce_field(k, str(v))
             found = True
             break
     if not found:

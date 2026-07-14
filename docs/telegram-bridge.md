@@ -1,7 +1,8 @@
 # The Telegram Bridge (`telegram:` config block)
 
-A guide to mirroring your Agentainer swarm's mail out to a Telegram chat — and
-routing replies from your phone back into the swarm as `user` mail.
+A guide to mirroring your Agentainer swarm's mail out to a Telegram chat, routing
+replies from your phone back into the swarm as `user` mail, and **driving the whole
+swarm from Telegram** with the same commands you'd use in the CLI or web UI.
 
 ---
 
@@ -9,7 +10,7 @@ routing replies from your phone back into the swarm as `user` mail.
 
 The Telegram bridge is an **optional, zero-dependency** integration (lives in
 `lib/telegram.py`). When you add a `telegram:` block to `agentainer.yaml` with a
-bot token and a chat id, it does two things:
+bot token and a chat id, it does three things:
 
 1. **Mirror out** — whenever the orchestrator *delivers* a message (enqueues it
    into an agent's `user` mailbox or another agent's queue), a copy is pushed to
@@ -19,8 +20,13 @@ bot token and a chat id, it does two things:
 
 2. **Route replies in** — a background long-poll loop reads Telegram updates. When
    you *reply* (a Telegram message reply) to a mirrored piece of `user` mail, that
-   reply is routed back into the swarm as `user` mail to the original sender. A
-   `/to <agent> <text>` command works too, for sending to any agent directly.
+   reply is routed back into the swarm as `user` mail to the original sender.
+
+3. **Full control plane** — slash commands give Telegram **complete parity with the
+   CLI and the web UI**: start/stop/restart agents, read status/inbox/queue/pane/logs,
+   send mail, type into live sessions, and add/edit/remove agents or edit swarm
+   settings — all from your phone. See [§6a](#6a-full-command-surface--telegram--cli--ui)
+   for the full table, or send `/help` in the chat.
 
 It is **off by default**. Nothing touches the Telegram API unless you explicitly
 set `enabled: true` with valid credentials.
@@ -183,6 +189,12 @@ The bridge is built for the "I'm away from the keyboard" case:
    README. What do you want me to do?
    ```
 
+   > **Long messages.** The inline card shows the first ~1200 characters. If the
+   > body is longer, the card is *not* the whole story — Agentainer additionally
+   > uploads the **full** body as a `.txt` attachment (sent as a reply to the
+   > card), so nothing is silently dropped off your phone. Tap the attachment to
+   > read the rest.
+
 3. **When you're back at a computer**, you answer through the normal `user`/`send`
    path — either the CLI (`agentainer user send --to <agent> "..."`) or the web UI
    control plane. The agents never know you were unreachable in the meantime;
@@ -204,18 +216,25 @@ the core mail path (`lib/mail.py` calls `telegram.on_enqueued`), with **no UI or
 server required**.
 
 Routing replies *in* is different: it needs the **long-poll Poller thread**
-(`lib/telegram.py` `start_poller` / `Poller`). That thread is started from the
-**web UI control plane** (`lib/ui.py`), not from `agentainer up`:
+(`lib/telegram.py` `start_poller` / `Poller`), which lives inside the **web UI
+control plane** (`lib/ui.py`), not `agentainer up`.
 
-- The UI's `/api/telegram/poll` endpoint starts/stops the poller (a per-serve
-  daemon thread, one per UI process).
-- Editing the `telegram:` block via the UI also restarts the poller so it picks
-  up new credentials.
+**"Receive replies" is ON by default.** You do **not** have to turn it on manually:
 
-So to actually reply from your phone, **the UI server must be running with
-polling enabled.** Start the UI (`agentainer ui` / the `serve` command), open its
-Telegram panel, and turn polling on. The `enabled`/`chat_id`/`bot_token` checks
-still apply — polling refuses to start if the bridge isn't fully configured.
+- When you start the UI server (`agentainer serve` / `ui`) and Telegram is fully
+  configured, the poller starts **automatically** as the server begins serving.
+- If you enable the bridge (or paste a token/chat id) from the UI while the server
+  is already running, the poller starts **immediately** — no separate toggle.
+- Editing the `telegram:` block restarts the poller so it picks up new credentials;
+  disabling the bridge stops it.
+- The UI's "Stop replies" button (and `POST /api/telegram/poll {"run": false}`)
+  still lets you turn it **off** any time; `/api/telegram/poll {"run": true}`
+  turns it back on.
+
+The `enabled`/`chat_id`/`bot_token` checks still apply — the poller never starts
+unless the bridge is fully configured. So the only requirement to reply from your
+phone is that **a UI server is running** (`agentainer serve`); everything else is
+automatic.
 
 Two inbound modes are supported (`_process_update`):
 
@@ -224,12 +243,69 @@ Two inbound modes are supported (`_process_update`):
 - **`/to <agent> <text>`** → sends `user` mail to `<agent>` directly. Unknown
   agent names get a usage hint back.
 
-Both only accept messages originating from your configured `chat_id`; anything
-from another chat is silently ignored.
+Anything else — a plain message that isn't a reply (or a reply whose original
+message is no longer in the bridge's reply-map) — has no recipient to route to, so
+Agentainer sends back an **acknowledgement** (`ℹ️ received, but not routed
+anywhere…`) telling you it saw the message and how to actually route one. This
+way a stray message never leaves you wondering whether the swarm is quietly
+working on it.
+
+All inbound modes only accept messages originating from your configured
+`chat_id`; anything from another chat is silently ignored.
 
 > You can verify the bridge end-to-end from the UI's test action (sends
 > "✅ Agentainer test message" to your chat via `send_message`), and inspect
 > `enabled` / `has_token` / `polling` state without ever exposing the token.
+
+---
+
+## 6a. Full command surface — Telegram = CLI = UI
+
+The bridge is a **complete control plane**, not just a notifier. Per Agentainer's
+parity rule (`CLAUDE.md` principle #7), **anything you can do from the web UI or by
+editing `agentainer.yaml`, you can do from Telegram** — because every command is a
+thin adapter over the same tested `lib/` core the CLI and UI call. Send `/help` in
+the chat for the live list.
+
+> ⚠️ **This is a control plane with the same power as the UI.** From your phone you
+> can start/stop agents, type straight into sessions (including ones running
+> `--yolo` / `--dangerously-skip-permissions`), and rewrite the config. Only the
+> configured `chat_id` is accepted — keep that chat (and your bot token) private.
+
+| Command | Does | Backed by |
+|---|---|---|
+| `/status` | swarm overview (up/down, busy, queue depth, your availability) | `tmux` + `turn` + `mail` |
+| `/agents` | list agents + their `can_talk_to` | `cfg.agents` |
+| `/up [agent]` | start all / one | `reconcile.start_all` / `start_one` |
+| `/down [agent]` | stop all / one | `reconcile.stop_all` / `stop_one` |
+| `/restart [agent]` | restart all / one | `reconcile.stop_* + start_*` |
+| `/reconcile` | make the running set match the config | `reconcile.reconcile` |
+| `/to <agent> <msg>` | send mail **as the user** | `mail.send_as_user` |
+| *(reply to a mirrored msg)* | answer its sender as the user | `telegram._route_user_reply` |
+| `/available` · `/away` | toggle your availability | `reconcile.edit_swarm` + `mail.set_user_available` |
+| `/inbox <agent>` | current inbox messages | `cfg.mail_paths().inbox` |
+| `/queue <agent>` | queued (not-yet-released) mail | `mail.queued_files` |
+| `/pane <agent>` | terminal snapshot of the live pane | `tmux.capture_pane` |
+| `/logs [agent] [n]` | recent event-log lines | `.agentainer/logs/*.jsonl` |
+| `/config` | swarm + telegram settings summary | `cfg` |
+| `/type <agent> <text>` | type text straight into the pane | `tmux.paste_into` |
+| `/key <agent> <Key>` | send one control key (`Enter`, `Escape`, `C-c`, …) | `tmux.send_key` |
+| `/compact [agent]` | `/compact` one or all running agents | `tmux.paste_into` |
+| `/idle <agent>` | force an agent idle + drain queued mail | `turn` + `mail` |
+| `/add <name> <type> <command…>` | add an agent (talks to `user`; refine with `/edit`) | `reconcile.add_agent` |
+| `/edit <agent> <key>=<value> …` | edit an agent's fields | `reconcile.edit_agent` |
+| `/remove <agent>` | remove an agent + stop its session | `reconcile.remove_agent` |
+| `/set <key>=<value> …` | swarm-level settings | `reconcile.edit_swarm` |
+| `/mirror <*\|a,b,…>` | change the mirror scope | `reconcile.edit_telegram` |
+| `/templates` | list bundled starter templates | `examples/` |
+| `/apply <template>` | seed an **empty** swarm from a template | `reconcile.apply_template` |
+
+**Argument notes.** A command word may carry a `@botname` suffix (Telegram adds it
+in groups) and is case-insensitive. For `/edit` and `/set`, a **single** `key=value`
+keeps spaces in the value (e.g. `/edit dev role=lead backend dev`), while **multiple**
+pairs are split on whitespace (`/set ready_timeout_ms=5000 resume=false`). Bad usage
+or an unknown agent comes back as a `⚠️` message so you can self-correct in-chat;
+long replies are automatically split under Telegram's message-size limit.
 
 ---
 

@@ -178,9 +178,9 @@ Applied to every agent unless the agent overrides them.
 ### What's *not* in this config
 - **No shared workdir.** Each agent has its own directory, so the prose and the
   table are drafted independently and merged by the hub — no file collisions.
-- **No `periodically_ping_seconds`.** The desk is event-driven: it only moves when
+- **No `pings`.** The desk is event-driven: it only moves when
   you send an "X vs Y" request. (If a writer went quiet, add
-  `periodically_ping_seconds: 300` to it.)
+  a `pings` cron rule to it.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — the finished guide is *held* (never bounced) until you flip it on
   (see §4).

@@ -128,9 +128,9 @@ Applied to every agent unless the agent overrides them.
   instead of quietly rewriting the mechanicist's rules.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** No agent is auto-nudged on a timer while
+- **No `pings`.** No agent is auto-nudged on a timer while
   idle — the pipeline is purely event-driven off real mail. (If you wanted the
-  director to poke a slow specialist, you'd add `periodically_ping_seconds: 300`
+  director to poke a slow specialist, you'd add a `pings` cron rule
   to it.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — the finished design doc is *held* (never bounced) until you flip it

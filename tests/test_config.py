@@ -369,28 +369,6 @@ def test_custom_type_command_with_token_passes(tmp_path):
     assert cfg.get("A").type == "bot"
 
 
-def test_periodically_ping_parsed(tmp_path):
-    cfg = load_config(
-        "swarm: {root: ./ws}\n"
-        "defaults: {type: claude, periodically_ping_seconds: 600}\n"
-        "agents:\n"
-        "  - {name: A, command: 'true', periodically_ping_seconds: 1800, periodically_ping_message: 'ping!'}\n",
-        tmp_path,
-    )
-    a = cfg.get("A")
-    assert a.periodically_ping_seconds == 1800
-    assert a.periodically_ping_message == "ping!"
-    # defaults propagate too
-    cfg2 = load_config(
-        "swarm: {root: ./ws}\n"
-        "defaults: {type: claude}\n"
-        "agents:\n  - {name: A, command: 'true'}\n",
-        tmp_path,
-    )
-    assert cfg2.get("A").periodically_ping_seconds == 0
-    assert cfg2.get("A").periodically_ping_message == ""
-
-
 def test_mail_dir_default_is_workdir(tmp_path):
     cfg = load_config(
         "swarm: {root: ./ws}\n"
@@ -646,6 +624,109 @@ def test_agent_unknown_type(tmp_path):
     with pytest.raises(ConfigError):
         load_config(
             "swarm: {root: ./ws}\nagents:\n  - {name: A, type: nope, command: 'true'}\n",
+            tmp_path,
+        )
+
+
+# ------------------------------------------------------------------ cron pings
+
+_PINGS_YAML = (
+    "swarm: {root: ./ws}\n"
+    "defaults: {type: claude}\n"
+    "agents:\n"
+    "  - name: A\n"
+    "    command: 'true'\n"
+    "    pings:\n"
+    "      - {message: 'work triage', cron: '*/30 9-18 * * 1-5'}\n"
+    "      - {message: 'weekend', cron: '0 12 * * 0,6', when_busy: queue}\n"
+)
+
+
+def test_pings_parsed(tmp_path):
+    a = load_config(_PINGS_YAML, tmp_path).get("A")
+    assert len(a.pings) == 2
+    assert a.pings[0].message == "work triage"
+    assert a.pings[0].cron == "*/30 9-18 * * 1-5"
+    assert a.pings[0].when_busy == "skip"          # default
+    assert a.pings[1].when_busy == "queue"
+    # schedule is the parsed Cron object, ready for evaluation.
+    assert hasattr(a.pings[0].schedule, "minutes")
+
+
+def test_pings_absent_is_empty(tmp_path):
+    a = load_config(
+        "swarm: {root: ./ws}\ndefaults: {type: claude}\n"
+        "agents:\n  - {name: A, command: 'true'}\n",
+        tmp_path,
+    ).get("A")
+    assert a.pings == []
+
+
+def test_pings_from_defaults(tmp_path):
+    cfg = load_config(
+        "swarm: {root: ./ws}\n"
+        "defaults:\n"
+        "  type: claude\n"
+        "  pings:\n"
+        "    - {message: 'hourly', cron: '0 * * * *'}\n"
+        "agents:\n  - {name: A, command: 'true'}\n",
+        tmp_path,
+    )
+    assert cfg.get("A").pings[0].message == "hourly"
+
+
+def test_pings_not_a_list(tmp_path):
+    with pytest.raises(ConfigError):
+        load_config(
+            "swarm: {root: ./ws}\ndefaults: {type: claude}\n"
+            "agents:\n  - {name: A, command: 'true', pings: 'nope'}\n",
+            tmp_path,
+        )
+
+
+def test_ping_entry_not_mapping(tmp_path):
+    with pytest.raises(ConfigError):
+        load_config(
+            "swarm: {root: ./ws}\ndefaults: {type: claude}\n"
+            "agents:\n  - name: A\n    command: 'true'\n    pings:\n      - 'nope'\n",
+            tmp_path,
+        )
+
+
+def test_ping_missing_message(tmp_path):
+    with pytest.raises(ConfigError):
+        load_config(
+            "swarm: {root: ./ws}\ndefaults: {type: claude}\n"
+            "agents:\n  - name: A\n    command: 'true'\n    pings:\n      - {cron: '0 * * * *'}\n",
+            tmp_path,
+        )
+
+
+def test_ping_missing_cron(tmp_path):
+    with pytest.raises(ConfigError):
+        load_config(
+            "swarm: {root: ./ws}\ndefaults: {type: claude}\n"
+            "agents:\n  - name: A\n    command: 'true'\n    pings:\n      - {message: hi}\n",
+            tmp_path,
+        )
+
+
+def test_ping_bad_cron(tmp_path):
+    with pytest.raises(ConfigError):
+        load_config(
+            "swarm: {root: ./ws}\ndefaults: {type: claude}\n"
+            "agents:\n  - name: A\n    command: 'true'\n"
+            "    pings:\n      - {message: hi, cron: 'not a cron'}\n",
+            tmp_path,
+        )
+
+
+def test_ping_bad_when_busy(tmp_path):
+    with pytest.raises(ConfigError):
+        load_config(
+            "swarm: {root: ./ws}\ndefaults: {type: claude}\n"
+            "agents:\n  - name: A\n    command: 'true'\n"
+            "    pings:\n      - {message: hi, cron: '0 * * * *', when_busy: maybe}\n",
             tmp_path,
         )
 

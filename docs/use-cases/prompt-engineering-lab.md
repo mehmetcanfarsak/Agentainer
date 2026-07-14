@@ -172,9 +172,9 @@ Applied to every agent unless the agent overrides them.
   same text.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** No agent is auto-nudged on a timer while
+- **No `pings`.** No agent is auto-nudged on a timer while
   idle — the loop is purely event-driven off real mail. (If you wanted the
-  lab_lead to poke a slow evaluator, you'd add `periodically_ping_seconds: 300`
+  lab_lead to poke a slow evaluator, you'd add a `pings` cron rule
   to it.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — mail addressed to you is *held* (never bounced) until you flip it on

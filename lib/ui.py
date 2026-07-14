@@ -515,8 +515,6 @@ class UIHandler(BaseHTTPRequestHandler):
                 "workdir": str(a.workdir),
                 "capture": a.capture,
                 "session": a.session,
-                "periodically_ping_seconds": a.periodically_ping_seconds,
-                "periodically_ping_message": a.periodically_ping_message,
             }
         )
         self._send_json(200, {"agent": d})
@@ -997,10 +995,13 @@ class UIHandler(BaseHTTPRequestHandler):
         if can is None:
             can = []
         extra = {}
-        for k in ("capture", "boot_delay_ms", "periodically_ping_seconds",
-                  "periodically_ping_message"):
+        for k in ("capture", "boot_delay_ms"):
             if data.get(k) not in (None, ""):
                 extra[k] = data[k]
+        # `pings` is a structured list of cron rules; pass it through so the
+        # loader validates each cron (a bad one is surfaced as 400, not a no-op).
+        if isinstance(data.get("pings"), list) and data["pings"]:
+            extra["pings"] = data["pings"]
         try:
             new_cfg = reconcile.add_agent(
                 self.cfg,
@@ -1115,11 +1116,16 @@ class UIHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": str(exc)})
             return
         UIHandler.cfg = new_cfg
-        # If a reply poller is running, restart it so it picks up the new config.
+        # Receive replies defaults ON: keep the poller matched to the new config.
+        # Stop any running poller, then (re)start it whenever Telegram is enabled --
+        # so enabling the bridge from the UI starts listening immediately (no
+        # separate toggle), a config change is picked up, and disabling stops it.
         global _tg_poller
         with _tg_lock:
             if _tg_poller is not None:
                 _tg_poller.stop()
+                _tg_poller = None
+            if telegram.is_enabled(new_cfg):
                 _tg_poller = telegram.start_poller(new_cfg)
             polling = _tg_poller is not None
         self._send_json(
@@ -1199,6 +1205,16 @@ def run_server(
     UIHandler.cfg = cfg
     UIHandler.token = token
     UIHandler.ui_dir = ui_path
+
+    # "Receive replies" is ON by default: if Telegram is fully configured, start
+    # the reply poller as soon as we serve, so phone replies + slash commands work
+    # without the operator having to flip a switch first. It's still stoppable any
+    # time from the UI's "Stop replies" toggle / POST /api/telegram/poll {run:false},
+    # and shutdown() stops it. A no-op when Telegram isn't enabled.
+    global _tg_poller
+    with _tg_lock:
+        if _tg_poller is None and telegram.is_enabled(cfg):
+            _tg_poller = telegram.start_poller(cfg)
 
     server = ThreadingHTTPServer((host, port), UIHandler)
     real_port = server.server_address[1]

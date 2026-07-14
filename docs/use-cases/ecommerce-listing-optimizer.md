@@ -181,7 +181,7 @@ Applied to every agent unless overridden.
   strategy authoritative and every deliverable passing through assembly and review.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** No agent is auto-nudged on a timer; the
+- **No `pings`.** No agent is auto-nudged on a timer; the
   pipeline is purely event-driven off real mail.
 - **No shared workdir.** Each agent has its own workspace, so there's no mailbox
   namespacing to think about. (If you *did* point two agents at one directory,

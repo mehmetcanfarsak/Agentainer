@@ -214,10 +214,10 @@ Applied to every agent unless the agent overrides them.
   what to require; note where a specialist attorney should confirm.
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** None of the four agents has a periodic ping
+- **No `pings`.** None of the four agents has a periodic ping
   configured, so no agent is auto-nudged on a timer while idle — the pipeline is
   purely event-driven off real mail. (If you wanted the lead to poke a slow
-  reviewer, you'd add `periodically_ping_seconds: 300` to the `lead`.)
+  reviewer, you'd add a `pings` cron rule to the `lead`.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — mail addressed to you is *held* (never bounced) until you flip it on
   (see §4).
@@ -506,7 +506,7 @@ For the full story, see [`sessions-and-resume.md`](../sessions-and-resume.md).
   document stays on disk.
 
 - **Periodic pings.** If a reviewer tends to run long, add
-  `periodically_ping_seconds: 300` to the `lead` so it nudges slow reviewers
+  a `pings` cron rule to the `lead` so it nudges slow reviewers
   automatically instead of waiting silently.
 
 ---

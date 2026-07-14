@@ -5,6 +5,43 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 🚧 [Unreleased]
+
+### ✨ Added
+- **Cron-scheduled pings (`pings:`).** An agent (or `defaults:`) can now carry a
+  list of scheduled pings, each with its own `message` and a standard 5-field
+  `cron` expression (`minute hour day-of-month month day-of-week`), so an agent
+  can be nudged with **different messages at different times** — working hours,
+  nights, weekends — rather than a single fixed message on a raw idle cadence. The zero-dependency
+  parser ([`lib/cron.py`](lib/cron.py)) supports `*`, `*/step`, `a-b` ranges,
+  `a-b/step`, comma lists, and case-insensitive 3-letter month/day names
+  (`jan`–`dec`, `sun`–`sat`; day-of-week `0`/`7` both Sunday), and follows the
+  standard Vixie-cron day-of-month/day-of-week rule. Schedules are evaluated in
+  the **host's local time** (no timezone database — deliberately zero-dep).
+- **Per-rule `when_busy` policy** (`skip` | `queue`, default `skip`): a rule due
+  while the agent is mid-turn is either dropped (so a busy agent's mailbox never
+  fills with stale pings) or enqueued to wait for the turn to end. Guards carried
+  over: at most **one** unhandled ping outstanding across all of an agent's rules
+  (no pile-up), each rule fires **at most once per matching minute**, and on
+  overlap the **first deliverable rule in list order** wins. Malformed schedules
+  are rejected **fail-fast at config load** with an error naming the agent.
+- **Two new scheduled example swarms + use-case guides** built around `pings:`:
+  **`ops-watchtower`** (an on-call monitoring swarm — a `*/15` business-hours
+  sweep with `skip`, an hourly overnight cadence and morning rollup with
+  `when_busy: queue`, and a nightly deep probe) and **`content-cadence`** (an
+  editorial team on a *weekly* calendar — plan Mon, draft Tue/Thu, review Wed,
+  ship Fri, plus a monthly recap on the 1st, showcasing day-of-week and
+  day-of-month cron). See [`docs/use-cases/ops-watchtower.md`](docs/use-cases/ops-watchtower.md)
+  and [`docs/use-cases/content-cadence.md`](docs/use-cases/content-cadence.md).
+
+### 🗑️ Removed
+- **Legacy per-agent ping fields `periodically_ping_seconds` /
+  `periodically_ping_message`.** These are superseded by the richer cron `pings:`
+  list above; keeping both was redundant and confusing. Migrate a
+  `periodically_ping_seconds: N` / `periodically_ping_message: "…"` pair to a
+  single `pings` rule, e.g. `pings: [{cron: "*/10 * * * *", message: "…"}]`.
+  The old keys are now ignored if present in a config.
+
 ## 🐛 [2.0.1] — 2026-07-12
 
 Patch release: correctness fixes in the mailroom, turn tracking, and reconcile,

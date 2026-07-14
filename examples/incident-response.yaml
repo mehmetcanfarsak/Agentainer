@@ -74,6 +74,18 @@ agents:
     type: claude
     can_talk_to: [commander]
     command: "claude --dangerously-skip-permissions"
+    # A fixed status cadence so the outside world hears from you even when no one
+    # asks. Incidents don't keep office hours, so this fires every 30 minutes
+    # around the clock. `when_busy: queue` (not skip) means a ping that lands
+    # while the scribe is mid-write still runs once it frees up -- you never want
+    # to silently drop a stakeholder update.
+    pings:
+      - message: |
+          Status cadence: append a fresh entry to TIMELINE.md and draft the next
+          non-technical stakeholder update (what's affected, what you're doing,
+          the next update time). If nothing has changed, say "no change" plainly.
+        cron: "*/30 * * * *"          # every 30 minutes, around the clock
+        when_busy: queue
     role: |
       You are the SCRIBE. Keep the record and the outside world informed.
       Maintain TIMELINE.md: a timestamped log of what was observed, decided, and

@@ -162,7 +162,7 @@ Field by field:
   for humans, keyword-woven for Play Store indexing).
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** No agent is auto-nudged on a timer — the
+- **No `pings`.** No agent is auto-nudged on a timer — the
   pipeline is purely event-driven off real mail.
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — mail addressed to you is *held* (never bounced) until you flip it on.

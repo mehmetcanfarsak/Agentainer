@@ -96,12 +96,13 @@ agents:
     type: claude
     can_talk_to: [newsgatherer, summarizer, writer, user]
     command: "claude --dangerously-skip-permissions"
-    periodically_ping_seconds: 86400
-    periodically_ping_message: |
-      It is time for your scheduled daily briefing refresh. If you have no other
-      pending task, gather fresh items on the standing topics (your last
-      instructions from the user) and rebuild the digest, then deliver it to
-      user. If you are already mid-task, ignore this and continue.
+    pings:
+      - message: |
+          It is time for your weekday morning briefing. ...
+        cron: "0 7 * * 1-5"        # 07:00, Mon-Fri
+      - message: |
+          Weekend check-in. ...
+        cron: "0 9 * * sat,sun"    # 09:00, Saturday & Sunday
     role: |
       You are the CHIEF of a personal daily-briefing service. ...
       MAILBOX: when a message lands in your inbox/, read it and act; when done,
@@ -158,17 +159,21 @@ Applied to every agent unless the agent overrides them.
   hub: it can delegate to every spoke, and it is the **only agent that can talk to
   `user`**. That last part matters — keep the human-facing surface to a single
   agent (see Tips).
-- **`periodically_ping_seconds: 86400`** — a *self-trigger*. Every 24h of idle
-  time the orchestrator injects the `periodically_ping_message` into the chief's
-  queue as a `system` message, so the chief can rebuild the digest without you
-  doing anything. It is **idle-only** (skipped while the chief is busy), and
-  **no-pile-up** (skipped if an unhandled ping is already queued, and only fires
-  if at least 86400s have elapsed since the last ping) — so the digest refreshes
-  on a cadence without ever stacking up reminders. The chief decides what to do
-  with it (rebuild, or ignore if mid-task).
-- **`periodically_ping_message`** — the text the chief receives on each ping. It
-  tells the chief to use its *standing topics* (the topics you last sent) and
-  rebuild the digest, but to ignore the ping if it's already working.
+- **`pings:`** — a *cron self-trigger*, and the flagship demo of the feature.
+  Each entry is a `message` plus a 5-field `cron` (standard
+  `minute hour day-of-month month day-of-week`, evaluated in the host's **local**
+  time), optionally with `when_busy`. When a rule comes due the orchestrator
+  injects its `message` into the chief's queue as a `system` message, so the
+  chief rebuilds the digest without you doing anything. Here there are two rules:
+  a **weekday morning briefing** (`0 7 * * 1-5` — 07:00, Mon-Fri) and a lighter
+  **weekend check-in** (`0 9 * * sat,sun` — 09:00 on Saturday and Sunday, using
+  the 3-letter day names). Because the two schedules carry *different* messages,
+  the chief knows which kind of digest to build. `when_busy` defaults to `skip`,
+  so a ping that comes due while the chief is mid-task is **dropped** rather than
+  stacked — the digest refreshes on cadence without piling up reminders. (Set
+  `when_busy: queue` on a rule you never want to miss; it waits for the agent to
+  free up instead.) This replaces the removed single-cadence per-agent ping field, which
+  fired one fixed message on a raw seconds interval.
 - **`command: "claude --dangerously-skip-permissions"`** — launches Claude Code in
   its tmux pane. (Placeholder — substitute your own launch command, e.g. a shell
   alias. Treat command strings as sensitive; they may embed keys.)
@@ -305,9 +310,9 @@ You don't relay anything by hand — the orchestrator releases exactly one inbox
 message at a time and fires the next hop off each agent's turn completion.
 
 > If you *don't* send topics, the agents just sit in standby (that's the point of
-> the standby prompt). But because `chief` has `periodically_ping_seconds: 86400`,
-> after 24h of idle it will be nudged to rebuild the digest on its own standing
-> topics — handy for a hands-off morning routine.
+> the standby prompt). But because `chief` has a `pings:` schedule, each weekday
+> at 07:00 (and 09:00 on weekends) it is nudged to rebuild the digest on its own
+> standing topics — handy for a hands-off morning routine.
 
 ---
 
@@ -338,8 +343,8 @@ scrollback, so this is how you reconstruct what happened):
 ```
 
 You'll see `user-send`, `delivered`, `route`, `read`, `read-receipt`, `bounce`,
-`ping`, etc. — one JSONL line per event. (The `ping` event is what the
-`periodically_ping_seconds` self-trigger produces.)
+`ping`, etc. — one JSONL line per event. (The `ping` event is what a `pings:`
+cron rule produces when it fires.)
 
 **A specific inbox** — what a given agent is currently looking at:
 
@@ -416,11 +421,13 @@ the reboot walkthrough in
   launch Claude) means completion never triggers and the agent pins "busy" forever.
   `status` showing an agent `busy` for a long time with `unread` mail is the tell.
 
-- **The daily ping is idle-only and non-piling.** `periodically_ping_seconds`
-  only injects a `system` ping while the chief is idle, skips if a prior ping is
-  still unhandled, and only fires if the full interval has elapsed. So you get a
-  once-a-day refresh, not a pile of "refresh!" reminders. Don't set it too low
-  (e.g. 60s) unless you want an aggressive re-nudge loop.
+- **The scheduled pings don't pile up.** Each `pings:` rule injects a `system`
+  message at its cron time; with the default `when_busy: skip`, a ping that comes
+  due while the chief is mid-task is dropped rather than stacked. So you get a
+  clean morning refresh, not a pile of "refresh!" reminders. Use `when_busy:
+  queue` only for a rule you can't afford to miss (it waits instead of dropping),
+  and keep cron minute fields coarse (e.g. `0 7` not `*/1 7`) unless you actually
+  want a tight re-nudge loop.
 
 - **Nudges re-inject the protocol every time.** A forgetful model can't wedge the
   swarm: mail moved to `read/` is just a best-effort receipt, and a message shown
@@ -477,10 +484,14 @@ The four-agent shape is a starting point. Common variations:
   `chief`. Tighter is usually better for a digest; wider only if a spoke genuinely
   needs it.
 
-- **Set the ping cadence.** `periodically_ping_seconds: 86400` is daily. For a
-  weekday-morning feel you might run the swarm only on weekdays via cron and drop
-  the ping, or set `43200` (every 12h) if you want a midday refresh too. Keep it
-  idle-only and you'll never get pile-up.
+- **Retune the schedule.** The two `pings:` rules are just cron strings — edit
+  them freely. Want a midday refresh too? Add `0 13 * * 1-5`. Want an overnight
+  digest ready before you wake? Use a comma list in the hour field like
+  `0 5,6 * * 1-5` (never an out-of-range or descending range — cron is validated
+  at load, so a bad expression fails `up`). Each rule can carry its own message,
+  so a "quick headlines" ping and a "full deep-dive" ping can live side by side.
+  For a fully self-driving, multi-agent schedule see
+  [`scheduled-standup.md`](./scheduled-standup.md).
 
 - **Change what "the digest" is.** Everything the chief knows about your interests
   lives in the chief's `role` plus the topics you last `send`. Edit the chief's

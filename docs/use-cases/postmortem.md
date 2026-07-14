@@ -209,9 +209,9 @@ Applied to every agent unless the agent overrides them.
   test, and a priority; then the finished blameless writeup for the human."
 
 ### What's *not* in this config
-- **No `periodically_ping_seconds`.** The writeup is event-driven off your
+- **No `pings`.** The writeup is event-driven off your
   arrival; there's no timer poking agents. (If you wanted the lead to nudge a
-  slow analyst, add `periodically_ping_seconds: 300` to `incident_lead`.)
+  slow analyst, add a `pings` cron rule to `incident_lead`.)
 - **No `user` availability set in the file.** The `user` mailbox defaults to
   **away** — mail addressed to you is *held* (never bounced) until you flip it on
   (see §4).
@@ -498,7 +498,7 @@ This config is a starting point. Common variations:
   a `workdir:` that can see them, or (cleaner) pass an absolute path in your
   `send` message as the example `command` does. Never put secrets in the path.
 
-- **Add a periodic nudge.** If a pass stalls, add `periodically_ping_seconds: 300`
+- **Add a periodic nudge.** If a pass stalls, add a `pings` cron rule
   to the stalled agent's entry so the orchestrator re-pastes the protocol on a
   timer.
 
