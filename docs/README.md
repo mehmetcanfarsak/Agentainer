@@ -32,11 +32,18 @@ This folder holds the user-facing documentation. The design record is
 - **[Sessions & Resume](sessions-and-resume.md)** — resume-by-default, what
   `.agentainer/sessions.yaml` stores, `remove-session`, and the shell-wrapper
   `resume_command` pitfall.
+- **[Multi-Swarm Control Plane](multi-swarm.md)** — one `agentainer serve` for
+  every swarm on the machine: the global registry, the swarms dashboard, creating
+  swarms (from an example, edited inline, or built by a coding-agent), and shared
+  Telegram — with CLI/UI/Telegram parity.
 - **[UI Guide](ui-guide.md)** — the `agentainer serve` HTTP control plane
   (observability, terminal snapshot, send-from-UI, availability toggle, dynamic
   reconcile) and its security invariants.
 - **[Telegram Bridge](telegram-bridge.md)** — mirror agent mail to a Telegram chat
   so you stay reachable from your phone.
+- **[MCP — Manage from a Coding Agent](mcp.md)** — the Model Context Protocol
+  server (`agentainer mcp` over stdio, or `POST /mcp` on `serve`) that lets a
+  coding agent monitor and manage every swarm through a stable tool set.
 
 ## Real-world use cases
 
@@ -218,6 +225,105 @@ that ranks, rich-result schema, and the copy pipelines behind high-traffic sites
   options → "X vs Y" buying guide → comparison table (distinct from affiliate /
   competitive-intel).
   ([`examples/comparison-guide-writer.yaml`](../examples/comparison-guide-writer.yaml))
+
+### Data & analytics use cases
+
+- **[Data Analyst](use-cases/data-analyst.md)** — EDA + insight report from raw
+  files (the "business analyst from two spreadsheets" pattern).
+  ([`examples/data-analyst.yaml`](../examples/data-analyst.yaml))
+- **[SQL Analyst](use-cases/sql-analyst.md)** — self-service analytics over a
+  warehouse: entity-mapping + a verification guardrail before the answer reaches you.
+  ([`examples/sql-analyst.yaml`](../examples/sql-analyst.yaml))
+- **[Forecast Analyst](use-cases/forecast-analyst.md)** — time-series forecasting
+  with a reviewer sanity-gate on every forecast.
+  ([`examples/forecast-analyst.yaml`](../examples/forecast-analyst.yaml))
+- **[Experiment Analyst](use-cases/experiment-analyst.md)** — A/B test / causal
+  experiment analysis → ship/hold/kill memo (peeking + SRM guardrails).
+  ([`examples/experiment-analyst.yaml`](../examples/experiment-analyst.yaml))
+- **[Data-Quality Guardian](use-cases/data-quality-guardian.md)** — a self-driving
+  data-quality monitor that alerts only on real failures.
+  ([`examples/data-quality-guardian.yaml`](../examples/data-quality-guardian.yaml))
+
+### DevOps / SRE / IaC use cases
+
+- **[Terraform Reviewer](use-cases/terraform-reviewer.md)** — IaC plan generation +
+  multi-agent review + drift detection.
+  ([`examples/terraform-reviewer.yaml`](../examples/terraform-reviewer.yaml))
+- **[Kubernetes / GitOps](use-cases/k8s-gitops.md)** — Helm/ArgoCD review +
+  CrashLoopBackOff diagnosis + deploy gating.
+  ([`examples/k8s-gitops.yaml`](../examples/k8s-gitops.yaml))
+- **[CI/CD Builder](use-cases/ci-cd-builder.md)** — generate + harden a pipeline,
+  with cross-stage log correlation on failure.
+  ([`examples/ci-cd-builder.yaml`](../examples/ci-cd-builder.yaml))
+- **[Log Correlator](use-cases/log-correlator.md)** — multi-service log correlation
+  for a failing trace / request.
+  ([`examples/log-correlator.yaml`](../examples/log-correlator.yaml))
+- **[Cloud Cost Optimizer](use-cases/cloud-cost-optimizer.md)** — FinOps: find waste,
+  right-size, recommend savings (with a risk gate).
+  ([`examples/cloud-cost-optimizer.yaml`](../examples/cloud-cost-optimizer.yaml))
+- **[Chaos Game-Day](use-cases/chaos-game-day.md)** — an adversarial chaos-engineering
+  exercise: inject reversible faults, record what breaks.
+  ([`examples/chaos-game-day.yaml`](../examples/chaos-game-day.yaml))
+
+### Security use cases
+
+- **[Secure Code Review](use-cases/secure-code-review.md)** — a finder proposes
+  candidate vulns; an independent verifier confirms each with proof.
+  ([`examples/secure-code-review.yaml`](../examples/secure-code-review.yaml))
+- **[Threat Modeler](use-cases/threat-modeler.md)** — STRIDE / abuse-case generation
+  from an architecture spec.
+  ([`examples/threat-modeler.yaml`](../examples/threat-modeler.yaml))
+- **[Vulnerability Triage](use-cases/vuln-triage.md)** — CVE / dependency scan →
+  context-aware risk rank → patch plan.
+  ([`examples/vuln-triage.yaml`](../examples/vuln-triage.yaml))
+- **[Secrets Scanner](use-cases/secrets-scanner.md)** — detect hardcoded secrets and
+  draft rotation + secrets-manager remediation (never echoes the secret).
+  ([`examples/secrets-scanner.yaml`](../examples/secrets-scanner.yaml))
+- **[Compliance Mapper](use-cases/compliance-mapper.md)** — map controls to SOC 2 /
+  GDPR / HIPAA / ISO 27001 into a coverage matrix.
+  ([`examples/compliance-mapper.yaml`](../examples/compliance-mapper.yaml))
+
+### Orchestration showcases
+
+- **[Multi-Provider Review](use-cases/multi-provider-review.md)** — non-redundant PR
+  review across Claude / Codex / Gemini (different lenses, no overlap).
+  ([`examples/multi-provider-review.yaml`](../examples/multi-provider-review.yaml))
+- **[Research → Plan → Implement](use-cases/rpi-pipeline.md)** — an RPI handoff loop:
+  each stage hands a structured artifact to the next.
+  ([`examples/rpi-pipeline.yaml`](../examples/rpi-pipeline.yaml))
+- **[Spec-to-Ship](use-cases/spec-to-ship.md)** — the full spec → build → test →
+  review → release-gate pipeline.
+  ([`examples/spec-to-ship.yaml`](../examples/spec-to-ship.yaml))
+- **[Red Team / Blue Team](use-cases/red-team-blue-team.md)** — a leashed red attacker
+  vs a blue defender, scored by a neutral keeper.
+  ([`examples/red-team-blue-team.yaml`](../examples/red-team-blue-team.yaml))
+- **[Adjudicated Debate](use-cases/adjudicated-debate.md)** — multi-model deliberation
+  with a neutral judge (distinct from the simple `debate` example).
+  ([`examples/adjudicated-debate.yaml`](../examples/adjudicated-debate.yaml))
+
+### Domain-expert use cases
+
+- **[FP&A Analyst](use-cases/fp-and-a-analyst.md)** — ledger variance analysis + a
+  CFO-ready forecast narrative.
+  ([`examples/fp-and-a-analyst.yaml`](../examples/fp-and-a-analyst.yaml))
+- **[Literature Review](use-cases/literature-review.md)** — multi-source scientific
+  synthesis with a citation graph ("no claim without a source").
+  ([`examples/literature-review.yaml`](../examples/literature-review.yaml))
+- **[Legal Discovery](use-cases/legal-discovery.md)** — eDiscovery triage with a
+  privilege checker that flags, never leaks.
+  ([`examples/legal-discovery.yaml`](../examples/legal-discovery.yaml))
+- **[Grant Writer](use-cases/grant-writer.md)** — grant proposal drafting + a
+  simulated skeptical reviewer loop.
+  ([`examples/grant-writer.yaml`](../examples/grant-writer.yaml))
+- **[Patent Analyzer](use-cases/patent-analyzer.md)** — patent landscape / prior-art
+  search and infringement brief.
+  ([`examples/patent-analyzer.yaml`](../examples/patent-analyzer.yaml))
+- **[Clinical Evidence Synthesizer](use-cases/clinical-evidence-synthesizer.md)** —
+  clinical-trial evidence for a PICO question, graded by strength.
+  ([`examples/clinical-evidence-synthesizer.yaml`](../examples/clinical-evidence-synthesizer.yaml))
+- **[Data Migration Auditor](use-cases/data-migration-auditor.md)** — audit a
+  completed data migration's source↔target fidelity.
+  ([`examples/data-migration-auditor.yaml`](../examples/data-migration-auditor.yaml))
 
 ## Security note
 

@@ -352,11 +352,17 @@ construction.
 Some agents have standing, time-based duties (e.g. a news reporter should do its
 rounds regularly) even with an empty inbox. Two **optional** per-agent fields:
 
+> **Superseded (D26).** The original fixed-cadence fields
+> `periodically_ping_seconds` / `periodically_ping_message` have been **removed**
+> in favour of the richer cron `pings:` list (see D26); a single repeating ping is
+> now just one `pings` rule. The guards below are unchanged.
+
 ```yaml
 agents:
   reporter:
-    periodically_ping_seconds: 1800
-    periodically_ping_message: "Check the news wires and post any updates."
+    pings:
+      - cron: "*/30 * * * *"    # every 30 minutes
+        message: "Check the news wires and post any updates."
 ```
 
 **Implementation:** a periodic ping is delivered as a message from `system` into
@@ -448,6 +454,13 @@ Mail is only transport. Each agent also needs a **standing role** and a correct
   protocol: your inbox is *here*, send by writing to *here*, move handled mail to
   `read/`, you can message *these* agents. This is the one-time full protocol
   teach (the nudge re-injects the essentials thereafter).
+- **Standby wrapper (D25).** The first prompt is the agent's `role` wrapped with
+  an explicit STANDBY notice: *no task has been assigned yet, do NOT send any
+  mail, you will be notified (a message lands in `inbox/`) when your first real
+  task arrives.* This stops a proactive model from mailing its peers the instant
+  the swarm comes up, before any human-assigned task exists. The human delivers
+  the first task via `agentainer send`, and the normal nudge is the notification.
+  Implemented in `mail.standby_prompt` and used by `launch_agent_full`.
 - **Trust-modal handling (carried from v1 §13.3).** If "trust this directory?"
   swallows the first prompt, the agent never learns the protocol. Port
   `pretrust_claude_dir` and make trust-handling a **pluggable per-type step**, not
@@ -485,9 +498,10 @@ agents:
     role: "Coordinator. Break work down and delegate."   # standing instructions / first prompt
     can_talk_to: [bob, user]   # strict whitelist; presence => outbox/<name>/ folder created
     mail_dir: ./mail/alice     # optional per-agent override
-    # periodic ping (both optional):
-    periodically_ping_seconds: 0
-    periodically_ping_message: ""
+    # cron-scheduled pings (optional):
+    pings:
+      - cron: "*/30 * * * *"
+        message: "Any progress to report? Reply, or stay quiet."
 
   bob:
     type: codex
@@ -728,6 +742,13 @@ Each phase is independently shippable and testable.
 - **P4 — Dynamic reconcile.** Edit `agentainer.yaml`, add/delete agents from the
   UI via validate → reconcile (delta apply), fully logged.
 
+Post-P4, three additive control-plane layers shipped (each 100%-covered): the
+**multi-swarm registry + shared settings** (one `serve` for every swarm on the
+machine, global `~/.agentainer/` home, guided create flow), the **Telegram
+bridge**, and the **MCP server** (D27) — the fourth surface, letting a coding
+agent monitor and manage the system. All four surfaces (CLI / UI / Telegram /
+MCP) stay at capability parity over the shared `lib/` core (CLAUDE.md #7, D27).
+
 ---
 
 ## 27. Risks & open questions
@@ -819,9 +840,10 @@ Every explicit choice made during design:
   allowed recipients. Never assume model memory.
 - **D11.** **The model is always told its exact paths**; it never assumes them
   (makes `mail_dir` + shared-workspace prefixing invisible to the model).
-- **D12.** **Per-agent periodic ping** (`periodically_ping_seconds` /
-  `periodically_ping_message`), delivered as `system` mail, with idle-only +
-  no-pile-up + cadence-is-minimum guards.
+- **D12.** **Per-agent periodic ping**, delivered as `system` mail, with idle-only
+  + no-pile-up guards. *(Superseded by D26: the original fixed-cadence
+  `periodically_ping_seconds`/`periodically_ping_message` fields were removed in
+  favour of the cron `pings:` list.)*
 - **D13.** **`user` and `system` are virtual, reserved participants.** `user` is a
   UI-backed mailbox with a static ACL gate + a dynamic availability toggle
   (default **unavailable**, **hold-not-bounce** + `system` ack). `user` is
@@ -848,6 +870,49 @@ Every explicit choice made during design:
 - **D24.** **Keep all v1 invariants** (§24): zero-deps + no-PyYAML CI job, durable
   JSONL log, `package.json` version source, resume, never-ship-state, 100%
   coverage gate, discovery layer.
+- **D25.** **First prompt is a STANDBY wrapper, not the raw `role`.** At `up` each
+  agent gets its `role` (identity + mailbox protocol) wrapped with "no task yet,
+  do NOT send anything, you'll be notified when a real task arrives." Prevents a
+  proactive model from mailing peers at startup before any task exists. The human
+  delivers the first task via `agentainer send`; the nudge is the notification.
+
+- **D26.** **Cron-scheduled pings (`pings:`).** An agent (or `defaults`) may declare
+  a `pings:` list of `{message, cron, when_busy}` rules, so it is nudged with
+  different messages at different times (working hours vs nights vs weekends). This
+  **replaces** the removed fixed-cadence `periodically_ping_seconds` /
+  `periodically_ping_message` fields (D12). A
+  zero-dep 5-field cron parser (`lib/cron.py`) evaluates rules in the host's LOCAL
+  time. Guards are preserved: at most one unhandled ping outstanding (global
+  no-pile-up) and per-rule per-minute dedup; overlap resolves to the first
+  *deliverable* rule in list order. `when_busy` is per-rule (`skip` default =
+  don't fill a busy mailbox; `queue` = enqueue to wait). A non-empty `pings` list
+  takes precedence over the legacy fields, which still work when it is absent.
+  Cron is validated at config load (a bad expression is a `ConfigError` naming the
+  agent), and editable from the UI agent form. Chose structured cron rules over a
+  new bespoke schedule DSL for familiarity; accepted the local-time (no tz db)
+  trade-off to keep zero deps.
+
+- **D27.** **MCP server — the fourth control plane, permanently maintained.**
+  Agentainer manages coding agents, so a coding agent managing *Agentainer* over
+  the Model Context Protocol is a first-class, forever-supported use case.
+  CLAUDE.md principle #7 is upgraded from three surfaces to **four** (CLI / UI / Telegram /
+  **MCP**) at capability parity. `lib/mcp.py` is a thin JSON-RPC 2.0 adapter over
+  the same tested `lib/` core — never its own copy of the routing/ACL/lifecycle
+  logic — kept at 100% coverage. **Two transports, one tool set:** `agentainer
+  mcp` (stdio; the `.mcp.json` path, no running `serve` required, operates over
+  the global registry) and `POST /mcp` on the `serve` HTTP control plane (reuses
+  the UI Bearer token; POST-only, `GET /mcp` → 405 since we push no server→client
+  notifications). Methods: `initialize`/`tools/list`/`tools/call`/`ping`;
+  notifications get no reply. Tools cover monitor (`list_swarms`, `swarm_status`,
+  `read_inbox`, `read_queue`, `read_user_inbox`, `agent_logs`, `capture_pane`,
+  `read_config`) and manage (`send_message`, `set_availability`,
+  `start_agent`/`stop_agent`, `up_swarm`/`down_swarm`, `create_swarm`,
+  `add_agent`/`remove_agent`); each takes an optional `swarm` (required only when
+  more than one is managed). **Tool failures are returned as `isError` results,
+  not JSON-RPC errors** (only malformed JSON-RPC uses the numeric codes), so the
+  model self-corrects in-band exactly like the mailroom's `system` mail. Zero new
+  dependencies. New management capabilities must add a matching MCP tool
+  alongside their CLI/UI/Telegram surfaces. Docs: `docs/mcp.md`.
 
 ---
 

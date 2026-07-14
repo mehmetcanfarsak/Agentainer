@@ -1,0 +1,148 @@
+# =============================================================================
+# 🛡️ Data-quality guardian -- a self-driving data-quality monitor.
+#
+# A swarm that wakes on a schedule, runs validation rules over watched datasets,
+# and escalates to the human ONLY when something actually fails. No human `send`
+# required -- the `pings:` rules own the clock. Bring it up and walk away:
+#
+#   cp examples/data-quality-guardian.yaml my-guardian.yaml
+#   agentainer up             -c my-guardian.yaml
+#   agentainer user available -c my-guardian.yaml   # so failures reach you
+#   # ...then leave it. The schedules below do the rest.
+#   agentainer down           -c my-guardian.yaml
+#
+# Shape: a GUARDIAN hub owns the clock and the human-facing surface. A PROFILER
+# runs the validation checks on a schedule, and an ALERTER drafts the incident
+# for the user when checks fail:
+#
+#   profiler ───┐
+#              ├── guardian ── user   (posts only real failures)
+#   alerter  ───┘
+#
+#   Hub and spoke: profiler/alerter only talk to guardian; guardian is the only
+#   one that reaches user. Routine "all green" checks stay SILENT -- only genuine
+#   failures are escalated. Nothing moves until a `pings:` rule nudges the
+#   guardian (or profiler), so the guardian is genuinely self-driving.
+#
+# CRON RECAP: each `pings` entry is `message` + `cron` (+ optional `when_busy`).
+# `cron` is standard 5-field `minute hour day-of-month month day-of-week`,
+# evaluated in the host's LOCAL time. `when_busy: skip` (default) drops a ping
+# that comes due mid-turn; `when_busy: queue` makes it wait its turn instead of
+# being dropped. Overnight windows are a COMMA LIST in the hour field
+# (`18-23,0-7`), never a descending range.
+#
+# Key-free: every `command` is a real CLI, but the swarm comes up and fires its
+# scheduled pings with NO API keys if you swap each `command` for a mock bash
+# loop (see headers in examples/quickstart.yaml). Treat `command` strings as
+# sensitive; they may embed keys.
+# =============================================================================
+
+swarm:
+  name: data-quality-guardian
+  root: ./data-quality-guardian-workspace
+
+defaults:
+  capture: none              # claude/codex are auto-upgraded to their hook at up
+  can_talk_to: []            # tightened per agent below
+
+agents:
+  - name: guardian
+    type: claude
+    can_talk_to: [profiler, alerter, user]
+    command: "claude --dangerously-skip-permissions"
+    # The clock lives here. Two cadences:
+    #   - a frequent business-hours sweep that must NOT stack (skip);
+    #   - an overnight deep run you cannot afford to miss (queue).
+    # The guardian is the ONLY agent that talks to the human.
+    pings:
+      # Business-hours sweep, every 30 minutes, 09:00-17:30, Mon-Fri.
+      # `skip` (default): if the guardian is still writing up a failure when the
+      # next half-hour comes due, that tick is dropped -- the freshest sweep is
+      # the one that matters. Routine green checks stay silent.
+      - message: |
+          Data-quality sweep. If you are idle, ask profiler to run the validation
+          battery over the watched datasets (schema conformance, freshness,
+          null-rate, distribution-shift, referential integrity). If profiler
+          reports a genuine failure, hand it to alerter to draft the incident for
+          user. If everything is green, STAY SILENT -- do not message the user.
+          If you are already mid-incident, ignore this tick.
+        cron: "*/30 9-17 * * 1-5"        # every 30 min, 09:00-17:30, Mon-Fri
+      # Overnight deep run, once a day at 03:00. `queue`: the nightly deep battery
+      # is too heavy for daytime sweeps and each run matters, so a sweep that comes
+      # due while you are still triaging a prior failure WAITS and fires next.
+      - message: |
+          Overnight deep data-quality run. Ask profiler to execute the full
+          validation battery including the slow distribution-shift and
+          cross-table referential-integrity checks. Page user (via outbox/user/)
+          ONLY if something genuinely fails -- otherwise stay quiet for the night.
+        cron: "0 3 * * *"               # 03:00 every day
+        when_busy: queue
+    role: |
+      You are the GUARDIAN of a self-driving data-quality monitor. You own the
+      clock and you are the ONLY agent that talks to the human (user). You do not
+      run the checks or draft the incidents yourself -- you coordinate:
+        (1) When a `system` ping says it's sweep/deep-run time, ask profiler to
+            run the validation battery over the watched datasets.
+        (2) When profiler reports a genuine failure, hand the exact finding to
+            alerter and ask for a drafted incident.
+        (3) Escalate to user ONLY on a real failure -- be the filter, not a
+            firehose. Routine "all green" checks stay silent; never wake the user
+            for a clean run. Spokes never talk to user; you speak for the swarm.
+      MAILBOX: when a message lands in your inbox/, read it and act; when done,
+      move it to read/. To send, write a file into outbox/<name>/ (read
+      outbox/<name>/about.md first to see who they are and whether they're
+      available) and finish your turn. You may message the agents in your
+      can_talk_to: profiler, alerter, user.
+
+  - name: profiler
+    type: codex
+    can_talk_to: [guardian]
+    command: "codex --yolo"
+    # The profiler carries its own schedule for the heaviest check -- a slow
+    # distribution-shift + referential-integrity deep run in the quiet of night.
+    # Different agent, different cadence; `queue` so the deep run is never skipped.
+    pings:
+      - message: |
+          Nightly deep validation: execute the full battery the daytime sweeps
+          skip -- distribution-shift detection (compare today's column
+          distributions against the trailing baseline), cross-table referential
+          integrity (orphan keys, broken joins), and an extended freshness window.
+          Report concretely to guardian: per dataset, PASS or the exact rule that
+          failed with the numbers behind it.
+        cron: "30 2 * * *"              # 02:30 every day
+        when_busy: queue
+    role: |
+      You are the PROFILER. When the guardian asks for a validation run (or the
+      nightly ping fires), execute the data-quality battery over the watched
+      datasets using your own tools:
+        - schema conformance (types, required columns, constraints),
+        - freshness (every watched table updated within its SLA window),
+        - null-rate (per column, against the agreed threshold),
+        - distribution-shift (today's distributions vs. the trailing baseline),
+        - referential integrity (no orphan keys, joins resolve).
+      Report concretely: per dataset, a state (PASS / FAIL) and, for each failure,
+      the exact rule and the numbers behind it. Do not triage or decide severity
+      -- that's the guardian's job. You report ONLY to the guardian, and you stay
+      silent on green runs.
+      MAILBOX: read new mail in inbox/, act, then move it to read/. To reply,
+      write a file into outbox/guardian/ (read outbox/guardian/about.md first)
+      and finish your turn.
+
+  - name: alerter
+    type: claude
+    can_talk_to: [guardian]
+    command: "claude --dangerously-skip-permissions"
+    # No schedule -- the alerter is purely reactive. It only works when the
+    # guardian hands it a confirmed failure, which keeps incident drafting tied
+    # to real signals, never to routine green checks.
+    role: |
+      You are the ALERTER. When the guardian hands you a confirmed failure from
+      the profiler, draft a tight incident for the user: what broke, which
+      dataset/table and rule, the blast radius (rows/downstream jobs affected),
+      when it started (last good check vs. first failed check), and the one
+      recommended next step. Be precise about severity -- say "likely impact" vs
+      "confirmed impact". You never decide whether to escalate -- the guardian
+      does; you only draft. You report ONLY to the guardian.
+      MAILBOX: read new mail in inbox/, act, then move it to read/. To reply,
+      write a file into outbox/guardian/ (read outbox/guardian/about.md first)
+      and finish your turn.

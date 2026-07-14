@@ -102,7 +102,7 @@ def patch_launch(monkeypatch, n_agents=2, wait=True, paste=True, always=False):
 
 
 def test_read_version_real():
-    assert cli.read_version() == "2.0.1"
+    assert cli.read_version() == "2.1.0"
 
 
 def test_read_version_fallback(monkeypatch, tmp_path):
@@ -1112,3 +1112,243 @@ def test_main_rewrite_yaml_arg(tmp_path):
 def test_main_invalid_command():
     with pytest.raises(SystemExit):
         cli.main(["frobnicate"])
+
+
+# --------------------------------------------------------------------------
+# up_config registers the swarm in the global control plane
+# --------------------------------------------------------------------------
+
+
+def test_up_registers_swarm(monkeypatch, tmp_path):
+    import registry
+
+    cfg = build(tmp_path, GENERAL_AGENTS, name="regme")
+    patch_launch(monkeypatch, n_agents=2)
+    with mock_tmux(has_session=False):
+        assert cli.main(["up", "-c", str(cfg.path), "--no-supervise"]) == 0
+    assert "regme" in {e["name"] for e in registry.list_entries()}
+
+
+# --------------------------------------------------------------------------
+# swarms: list / create / register / remove / up / down
+# --------------------------------------------------------------------------
+
+
+def test_swarms_list_empty(capsys):
+    assert cli.main(["swarms", "list"]) == 0
+    assert "no swarms registered" in capsys.readouterr().err
+
+
+def test_swarms_list_with_registered(monkeypatch, tmp_path, capsys):
+    import registry
+
+    cfg = build(tmp_path, GENERAL_AGENTS, name="listme")
+    registry.register("listme", cfg.path)
+    with mock_tmux(has_session=True):
+        assert cli.main(["swarms", "list"]) == 0
+    out = capsys.readouterr().out
+    assert "listme" in out
+    assert "running" in out
+
+
+def test_swarms_list_invalid_config(tmp_path, capsys):
+    import registry
+
+    bad = tmp_path / "broken" / "agentainer.yaml"
+    bad.parent.mkdir(parents=True)
+    bad.write_text("swarm: {root: ./ws}\nagents:\n  - {name: a, command: 'true', can_talk_to: [ghost]}\n")
+    registry.register("brokenswarm", bad)
+    assert cli.main(["swarms", "list"]) == 0
+    out = capsys.readouterr().out
+    assert "brokenswarm" in out
+    assert "(invalid:" in out
+
+
+def test_swarms_create_success(capsys):
+    import registry
+
+    assert cli.main(["swarms", "create", "created1"]) == 0
+    assert "created swarm" in capsys.readouterr().err
+    assert registry.entry("created1") is not None
+
+
+def test_swarms_create_with_template(tmp_path):
+    import registry
+
+    assert cli.main(["swarms", "create", "res2", "--template", "research"]) == 0
+    cfg = registry.resolve("res2")
+    assert cfg.agents  # seeded from the template
+
+
+def test_swarms_create_up(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(cli, "up_config", lambda cfg, **k: calls.append(cfg.name) or [])
+    assert cli.main(["swarms", "create", "upme", "--up"]) == 0
+    assert calls == ["upme"]
+    assert "up: started" in capsys.readouterr().err
+
+
+def test_swarms_create_up_no_tmux(monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    with pytest.raises(SystemExit):
+        cli.main(["swarms", "create", "upme2", "--up"])
+
+
+def test_swarms_create_duplicate(capsys):
+    assert cli.main(["swarms", "create", "dupe"]) == 0
+    with pytest.raises(SystemExit):
+        cli.main(["swarms", "create", "dupe"])
+
+
+def test_swarms_register_success(tmp_path, capsys):
+    import registry
+
+    cfg = build(tmp_path, GENERAL_AGENTS, name="regsw")
+    assert cli.main(["swarms", "register", str(cfg.path)]) == 0
+    assert "registered swarm" in capsys.readouterr().err
+    assert registry.entry("regsw") is not None
+
+
+def test_swarms_register_invalid_path():
+    with pytest.raises(SystemExit):
+        cli.main(["swarms", "register", "/nope/agentainer.yaml"])
+
+
+def test_swarms_remove_success(tmp_path, capsys):
+    import registry
+
+    cfg = build(tmp_path, GENERAL_AGENTS, name="rmme")
+    registry.register("rmme", cfg.path)
+    assert cli.main(["swarms", "remove", "rmme"]) == 0
+    assert "removed swarm" in capsys.readouterr().err
+    assert registry.entry("rmme") is None
+
+
+def test_swarms_remove_not_registered(capsys):
+    assert cli.main(["swarms", "remove", "ghost"]) == 1
+    assert "was not registered" in capsys.readouterr().err
+
+
+def test_swarms_up_unknown(monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+    with pytest.raises(SystemExit):
+        cli.main(["swarms", "up", "ghost"])
+
+
+def test_swarms_up_no_tmux(monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    with pytest.raises(SystemExit):
+        cli.main(["swarms", "up", "whatever"])
+
+
+def test_swarms_up_success(monkeypatch, capsys):
+    import registry
+
+    # An EMPTY swarm brings up nothing (no agents, no supervisor spawned).
+    registry.create_swarm("emptyup")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+    with mock_tmux(has_session=False):
+        assert cli.main(["swarms", "up", "emptyup"]) == 0
+    assert "started 0 agent(s)" in capsys.readouterr().err
+
+
+def test_swarms_down_unknown():
+    with pytest.raises(SystemExit):
+        cli.main(["swarms", "down", "ghost"])
+
+
+def test_swarms_down_success(monkeypatch, tmp_path, capsys):
+    import registry
+
+    cfg = build(tmp_path, GENERAL_AGENTS, name="downme")
+    registry.register("downme", cfg.path)
+    sup = mock.MagicMock()
+    monkeypatch.setitem(sys.modules, "supervisor", sup)
+    with mock_tmux(has_session=True):
+        assert cli.main(["swarms", "down", "downme"]) == 0
+    sup.stop_supervisor.assert_called_once()
+    assert "stopped" in capsys.readouterr().err
+
+
+def test_swarms_down_supervisor_absent(monkeypatch, tmp_path):
+    import registry
+
+    cfg = build(tmp_path, GENERAL_AGENTS, name="downme2")
+    registry.register("downme2", cfg.path)
+    monkeypatch.setattr(
+        cli, "_import_supervisor", lambda: (_ for _ in ()).throw(ImportError("nope"))
+    )
+    with mock_tmux(has_session=False):
+        assert cli.main(["swarms", "down", "downme2"]) == 0
+
+
+def test_swarms_build_success(monkeypatch, tmp_path, capsys):
+    import registry
+
+    registry.create_swarm("buildme")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(cli.scaffold, "open_builder_session",
+                        lambda cfg, **k: "buildme_builder")
+    assert cli.main(["swarms", "build", "buildme", "--agent", "claude"]) == 0
+    assert "buildme_builder" in capsys.readouterr().err
+
+
+def test_swarms_build_unknown(monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+    with pytest.raises(SystemExit):
+        cli.main(["swarms", "build", "ghost"])
+
+
+def test_swarms_build_no_tmux(monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    with pytest.raises(SystemExit):
+        cli.main(["swarms", "build", "whatever"])
+
+
+def test_swarms_build_scaffold_error(monkeypatch, tmp_path):
+    import registry
+
+    registry.create_swarm("builderr")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+
+    def _boom(cfg, **k):
+        raise ValueError("bad agent type")
+    monkeypatch.setattr(cli.scaffold, "open_builder_session", _boom)
+    with pytest.raises(SystemExit):
+        cli.main(["swarms", "build", "builderr"])
+
+
+def test_swarms_approve_success(monkeypatch, capsys):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(cli.scaffold, "approve_swarm",
+                        lambda name, **k: {"ok": True, "started": ["a", "b"]})
+    assert cli.main(["swarms", "approve", "anything"]) == 0
+    assert "started 2 agent(s)" in capsys.readouterr().err
+
+
+def test_swarms_approve_failure(monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(cli.scaffold, "approve_swarm",
+                        lambda name, **k: {"ok": False, "error": "config did not load"})
+    with pytest.raises(SystemExit):
+        cli.main(["swarms", "approve", "broken"])
+
+
+def test_swarms_approve_no_tmux(monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    with pytest.raises(SystemExit):
+        cli.main(["swarms", "approve", "whatever"])
+
+
+def test_swarms_use_success(capsys):
+    import registry
+
+    registry.create_swarm("useme")
+    assert cli.main(["swarms", "use", "useme"]) == 0
+    assert registry.active_swarm() == "useme"
+
+
+def test_swarms_use_unknown():
+    with pytest.raises(SystemExit):
+        cli.main(["swarms", "use", "ghost"])

@@ -20,6 +20,17 @@ import minyaml  # noqa: E402
 EXAMPLE_CONFIGS = sorted((REPO / "examples").glob("*.yaml")) + [REPO / "quickstart.yaml"]
 
 
+@pytest.fixture(autouse=True)
+def _isolate_state_dir(tmp_path_factory, monkeypatch):
+    """Point the global control-plane home (``AGENTAINER_STATE_DIR``) at a
+    throwaway dir for every test, so the suite never reads or writes the
+    developer's real ``~/.agentainer`` (registry, shared Telegram, settings) and
+    stays deterministic regardless of the host's global config."""
+    d = tmp_path_factory.mktemp("state")
+    monkeypatch.setenv("AGENTAINER_STATE_DIR", str(d))
+    return d
+
+
 @pytest.fixture
 def tmp_runtime(tmp_path):
     """A SwarmConfig whose runtime dirs live under a temp path (no real tmux)."""

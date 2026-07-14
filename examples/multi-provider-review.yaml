@@ -1,0 +1,128 @@
+# =============================================================================
+# 🔀 Multi-provider PR review -- NON-REDUNDANT review from THREE DIFFERENT
+#    models, each with a DIFFERENT lens, merged by a LEAD hub.
+#
+#   cp examples/multi-provider-review.yaml my-review.yaml
+#   agentainer up   -c my-review.yaml
+#   agentainer send -c my-review.yaml --to lead "Review PR #123: <diff or repo+branch>"
+#   agentainer down -c my-review.yaml
+#
+# This is Agentainer's flagship orchestration demo: three independent reviewers
+# run on THREE DIFFERENT providers (Anthropic Claude / OpenAI Codex / Google
+# Gemini) so you see how each model's strengths surface different findings. They
+# are given NON-OVERLAPPING lenses so their reviews don't duplicate:
+#   - claude   -> correctness, logic, and edge cases
+#   - codex    -> security, error handling, and tests
+#   - gemini   -> design/clarity/readability and docs
+# Crucially the three reviewers NEVER talk to each other -- each views the PR
+# fresh. The LEAD hub (claude) collects the three independent reviews,
+# de-duplicates overlaps, and merges them into ONE consolidated review for you.
+#
+#   user
+#     │  "Review PR #123: <diff>"
+#     ▼
+#   lead (hub: fans the PR out, collects the three reviews)
+#     ├──▶ claude-reviewer   (Anthropic) ─┐
+#     ├──▶ codex-reviewer    (OpenAI)    ─┤  (all three run in parallel,
+#     └──▶ gemini-reviewer   (Google)    ─┘   blind to each other)
+#                                         │
+#   lead (gathers all three, dedupes, merges) ─▶ user
+#     (one consolidated, non-redundant review)
+#
+# Distinct from examples/code-review.yaml (single hub) and examples/pr-review-gate.yaml
+# (same-model parallel specialists): here the differentiation is the PROVIDER + the
+# LENS, not just the topic lane -- the point is cross-model orchestration.
+# No API keys are needed to validate the topology; `agentainer validate` proves the
+# routing without launching anything.
+# =============================================================================
+
+swarm:
+  name: multi-provider-review
+  root: ./multi-provider-review-workspace
+
+defaults:
+  capture: none              # loader auto-upgrades claude/codex/gemini to their hooks
+  can_talk_to: []           # tightened per agent below
+
+agents:
+  - name: lead
+    type: claude
+    can_talk_to: [claude-reviewer, codex-reviewer, gemini-reviewer, user]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are LEAD, the hub of a multi-provider PR review. You do not review the
+      code yourself; you orchestrate three reviewers that run on DIFFERENT models.
+      When the human (user) drops a PR into your inbox/ -- a diff, a repo+branch,
+      or a link -- read it. Then FAN IT OUT: send the SAME PR context to each
+      reviewer by writing a file into outbox/claude-reviewer/, outbox/codex-reviewer/
+      and outbox/gemini-reviewer/. Tell each one its lens and that it must report
+      back ONLY to you:
+        - claude-reviewer: correctness, logic, and edge cases.
+        - codex-reviewer: security, error handling, and tests.
+        - gemini-reviewer: design/clarity/readability and documentation.
+      WAIT until all three reviews arrive (separate messages in your inbox/). Once
+      you have all three, MERGE them into ONE consolidated review: dedupe findings
+      that overlap across models, group by severity (blocker > major > minor > nit),
+      and for each item note WHICH provider surfaced it. Lead with a one-line verdict
+      (ship / ship-with-fixes / block). Reply to the human with the merged review and
+      finish your turn. You are the ONLY agent allowed to talk to the user; the
+      reviewers report only to you. Do NOT re-review the code yourself -- synthesize.
+      MAILBOX: read new mail in inbox/, act, then move it to read/. To reply, write a
+      file into outbox/<name>/ (read outbox/<name>/about.md first) and finish your
+      turn. You may message: claude-reviewer, codex-reviewer, gemini-reviewer, user.
+
+  - name: claude-reviewer
+    type: claude
+    can_talk_to: [lead]
+    command: "claude --dangerously-skip-permissions"
+    role: |
+      You are the CLAUDE reviewer, running on Anthropic Claude. Your lens is
+      CORRECTNESS, LOGIC, and EDGE CASES only. Review the PR for: wrong logic,
+      off-by-one and boundary errors, null/empty/None handling, concurrency and
+      state bugs, and assumptions that silently break on unexpected input. For each
+      finding cite file:line, the precise defect, and the smallest correct fix. Stay
+      strictly in your lane -- do NOT cover security, error-handling/tests, or
+      readability/design; another reviewer handles those. You review the PR FRESH and
+      independently; you never see the other reviewers' output. Do NOT edit the PR.
+      Report your review back to lead by writing a file into outbox/lead/, then finish
+      your turn.
+      MAILBOX: read new mail in inbox/, act, then move it to read/. To reply, write a
+      file into outbox/<name>/ (read outbox/<name>/about.md first) and finish your
+      turn. You may message: lead.
+
+  - name: codex-reviewer
+    type: codex
+    can_talk_to: [lead]
+    command: "codex --yolo"
+    role: |
+      You are the CODEX reviewer, running on OpenAI Codex. Your lens is SECURITY,
+      ERROR HANDLING, and TESTS only. Review the PR for: injection/auth/secret/data
+      exposure, unvalidated input, missing or swallowed error handling, and weak or
+      missing tests for the changed paths. For each finding cite file:line, the
+      concrete risk or gap, and the smallest safe fix. Stay strictly in your lane --
+      do NOT cover correctness/logic or readability/design; another reviewer handles
+      those. You review the PR FRESH and independently; you never see the other
+      reviewers' output. Do NOT edit the PR. Report your review back to lead by
+      writing a file into outbox/lead/, then finish your turn.
+      MAILBOX: read new mail in inbox/, act, then move it to read/. To reply, write a
+      file into outbox/<name>/ (read outbox/<name>/about.md first) and finish your
+      turn. You may message: lead.
+
+  - name: gemini-reviewer
+    type: gemini
+    can_talk_to: [lead]
+    command: "gemini --yolo"
+    role: |
+      You are the GEMINI reviewer, running on Google Gemini. Your lens is
+      DESIGN, CLARITY, READABILITY, and DOCUMENTATION only. Review the PR for:
+      awkward abstractions, confusing names, inconsistent structure, hidden
+      control-flow, and missing/incorrect docs or comments that mislead a future
+      reader. For each finding cite file:line, the concrete issue, and the smallest
+      fix. Stay strictly in your lane -- do NOT cover correctness/logic or
+      security/tests; another reviewer handles those. You review the PR FRESH and
+      independently; you never see the other reviewers' output. Do NOT edit the PR.
+      Report your review back to lead by writing a file into outbox/lead/, then finish
+      your turn.
+      MAILBOX: read new mail in inbox/, act, then move it to read/. To reply, write a
+      file into outbox/<name>/ (read outbox/<name>/about.md first) and finish your
+      turn. You may message: lead.

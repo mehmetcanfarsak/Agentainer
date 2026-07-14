@@ -87,6 +87,24 @@ def pretrust_claude_dir(agent: Agent) -> None:
         tmp.unlink(missing_ok=True)
 
 
+def pretrust_dir(workdir, agent_type: str) -> None:
+    """Pre-trust *workdir* for a coding-agent CLI so no trust modal eats input.
+
+    Used by the interactive swarm builder (``scaffold.open_builder_session``),
+    which opens a bare CLI in a directory Agentainer has not configured yet.
+    Only ``claude`` and ``codex`` show a first-run trust dialog; other types have
+    none, so this is a no-op for them. A lightweight stand-in object carries the
+    ``.name``/``.workdir`` the underlying helpers read.
+    """
+    from types import SimpleNamespace
+
+    stub = SimpleNamespace(name="builder", workdir=Path(workdir), type=agent_type)
+    if agent_type == "claude":
+        pretrust_claude_dir(stub)
+    elif agent_type == "codex":
+        install_codex_hook(stub)
+
+
 def install_claude_hook(agent: Agent) -> None:
     pretrust_claude_dir(agent)
     settings_path = agent.workdir / ".claude" / "settings.json"

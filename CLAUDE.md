@@ -86,15 +86,26 @@ with unread mail, the orchestrator sweeps its outbox and pastes a **nudge**
    wedge or loop the system.
 6. **Errors come back as mail** (`system` sender), so the model self-corrects
    in-band with no new concept.
-7. **Three control planes, one capability set — CLI, UI, and Telegram must reach
-   parity.** The user must be able to do *literally everything* from Telegram that
-   they can do from the UI or by editing `agentainer.yaml` — and the same holds
-   for the CLI. Every user-facing feature ships on **all three** surfaces (CLI,
-   UI, Telegram); a feature added to one is not "done" until it exists on the
-   other two. The shared, tested core logic lives in `lib/` so each surface is a
-   thin adapter over the same functions (keeps the 100%-coverage core the
-   substance). When you add a capability, add its CLI subcommand, its UI control,
-   and its Telegram command together, and update the docs for all three.
+7. **Four control planes, one capability set — CLI, UI, Telegram, and MCP must
+   reach parity.** The user must be able to do *literally everything* from
+   Telegram that they can do from the UI or by editing `agentainer.yaml` — and
+   the same holds for the CLI; and a **coding agent must be able to monitor and
+   manage the whole system over MCP** (`lib/mcp.py`). Every user-facing feature
+   ships on **all four** surfaces (CLI, UI, Telegram, MCP); a feature added to
+   one is not "done" until it exists on the other three. The shared, tested core
+   logic lives in `lib/` so each surface is a thin adapter over the same
+   functions (keeps the 100%-coverage core the substance). When you add a
+   capability, add its CLI subcommand, its UI control, its Telegram command, and
+   its **MCP tool** together, and update the docs for all four.
+
+   **MCP is a permanent, maintained surface.** Agentainer is itself an
+   agent-management system, so a coding agent managing it via the Model Context
+   Protocol is a first-class use case we commit to forever. `lib/mcp.py` is a
+   thin JSON-RPC 2.0 adapter over the same `lib/` core (never its own copy of the
+   logic); it rides two transports — `agentainer mcp` (stdio, what an agent puts
+   in its `.mcp.json`) and `POST /mcp` on the `serve` HTTP control plane (reuses
+   the Bearer token). New management capabilities get a matching MCP tool, kept
+   at 100% coverage. See `docs/mcp.md`.
 
 ## Footguns (carry these forward from v1)
 
@@ -126,7 +137,17 @@ with unread mail, the orchestrator sweeps its outbox and pastes a **nudge**
 
 ## Runtime state & logs (never commit or ship)
 
-Orchestrator-private state lives under `<root>/.agentainer/` (logs, per-agent
+There are **two distinct state homes** — don't conflate them. **Per-swarm**
+orchestrator-private state lives under `<root>/.agentainer/` (below). **Global**
+control-plane state lives under `~/.agentainer/` (env `$AGENTAINER_STATE_DIR`;
+`lib/registry.py`): the swarm **registry** (`registry.yaml` — which swarms one
+`serve` manages), shared **settings** (`settings.yaml` — the single Telegram bot
+every swarm shares + the Telegram-active swarm), created swarms under `swarms/`,
+and the shared Telegram offset. `$AGENTAINER_STATE_DIR` is **not** `$AGENTAINER_HOME`
+(the code/install root). Tests isolate it via an autouse `conftest` fixture; never
+commit or ship it.
+
+Per-swarm orchestrator-private state lives under `<root>/.agentainer/` (logs, per-agent
 queue, turn state, `sessions.yaml`). The **durable JSONL event log**
 (`.agentainer/logs/*.jsonl`) is the source of truth for history — fullscreen TUIs
 keep **no scrollback**, so you cannot recover history from a pane. Never commit or

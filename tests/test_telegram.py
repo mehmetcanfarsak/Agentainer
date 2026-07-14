@@ -732,3 +732,138 @@ def test_cmd_apply_errors(cfg, empty_cfg):
         telegram._dispatch_command(empty_cfg, "/apply nonexistent")  # unknown template
     with pytest.raises(telegram.TelegramError):
         telegram._dispatch_command(empty_cfg, "/apply")         # missing arg
+
+
+# --------------------------------------------------------------------------
+# shared multi-swarm control-plane poller (one bot, every swarm)
+# --------------------------------------------------------------------------
+
+
+def _tg_swarm(tmp_path, name):
+    """A telegram-enabled swarm rooted at its own dir, registered globally."""
+    import config as cfgmod
+    import registry
+    sub = tmp_path / name
+    sub.mkdir()
+    c = load_swarm(sub, AGENTS, name=name)
+    c.path.write_text(c.path.read_text() + TG)
+    c = cfgmod.load(c.path)
+    for d in (c.runtime, c.log_dir, c.queue_dir, c.run_dir):
+        d.mkdir(parents=True, exist_ok=True)
+    registry.register(name, c.path)
+    return c
+
+
+def test_control_poll_empty_and_disabled(tmp_path, net):
+    assert telegram.control_poll_once({}) == 0
+    c = _tg_swarm(tmp_path, "s1")
+    c.telegram.enabled = False
+    assert telegram.control_poll_once({"s1": c}) == 0
+
+
+def test_primary_cfg_active_and_fallback(tmp_path):
+    import registry
+    a = _tg_swarm(tmp_path, "aa")
+    b = _tg_swarm(tmp_path, "bb")
+    swarms = {"aa": a, "bb": b}
+    assert telegram._primary_cfg(swarms).name in ("aa", "bb")  # fallback = first
+    registry.set_active_swarm("bb")
+    assert telegram._primary_cfg(swarms).name == "bb"
+    registry.set_active_swarm("gone")  # not in the live set -> fallback
+    assert telegram._primary_cfg(swarms).name in ("aa", "bb")
+
+
+def test_control_command_swarms_use_and_passthrough(tmp_path):
+    import registry
+    a = _tg_swarm(tmp_path, "aa")
+    b = _tg_swarm(tmp_path, "bb")
+    swarms = {"aa": a, "bb": b}
+    out = telegram._control_command(swarms, "/swarms")
+    assert "aa" in out and "bb" in out
+    assert telegram._control_command(swarms, "/use bb").startswith("✓")
+    assert registry.active_swarm() == "bb"
+    assert "unknown swarm" in telegram._control_command(swarms, "/use ghost")
+    assert telegram._control_command(swarms, "/status") is None  # ordinary command
+
+
+def test_control_poll_routes_reply_cross_swarm(tmp_path, monkeypatch):
+    a = _tg_swarm(tmp_path, "aa")
+    b = _tg_swarm(tmp_path, "bb")
+    telegram._record_reply_target(b, 42, "alice", "m-1")  # reply belongs to bb
+    upd = [{"update_id": 7, "message": {"message_id": 100, "chat": {"id": 999},
+            "text": "go ahead", "reply_to_message": {"message_id": 42}}}]
+    monkeypatch.setattr(telegram, "_urlopen", FakeNet(_updates(upd)))
+    assert telegram.control_poll_once({"aa": a, "bb": b}) == 1
+    assert telegram._load_control_offset() == 8
+    inbox = b.mail_paths(b.get("alice")).inbox
+    q = list((b.queue_dir / "alice").glob("*")) + list(inbox.glob("*"))
+    assert any("go ahead" in f.read_text() for f in q)
+
+
+def test_control_process_update_variants(tmp_path, net):
+    a = _tg_swarm(tmp_path, "aa")
+    swarms = {"aa": a}
+    telegram._process_control_update(swarms, {"update_id": 1})                       # no message
+    telegram._process_control_update(swarms, {"message": {"chat": {"id": 999}}})     # no text
+    telegram._process_control_update(swarms, {"message": {"chat": {"id": 111}, "text": "hi"}})  # wrong chat
+    telegram._process_control_update(swarms, {"message": {"chat": {"id": 999}, "text": "/swarms"}})   # control
+    telegram._process_control_update(swarms, {"message": {"chat": {"id": 999}, "text": "/status"}})   # per-swarm
+    telegram._process_control_update(swarms, {"message": {"chat": {"id": 999}, "text": "hello"}})     # ack
+    assert "sendMessage" in net.methods()
+
+
+def test_control_process_update_command_error(tmp_path, net, monkeypatch):
+    a = _tg_swarm(tmp_path, "aa")
+    monkeypatch.setattr(telegram, "_dispatch_command",
+                        lambda cfg, text: (_ for _ in ()).throw(RuntimeError("boom")))
+    telegram._process_control_update({"aa": a},
+                                     {"message": {"chat": {"id": 999}, "text": "/status"}})
+    assert "sendMessage" in net.methods()
+
+
+def test_control_poll_bad_update_caught(tmp_path, monkeypatch):
+    a = _tg_swarm(tmp_path, "aa")
+    upd = [{"update_id": 3, "message": {"chat": {"id": 999}, "text": "x"}}]
+    monkeypatch.setattr(telegram, "_urlopen", FakeNet(_updates(upd)))
+    monkeypatch.setattr(telegram, "_process_control_update",
+                        lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert telegram.control_poll_once({"aa": a}) == 1
+    assert "telegram-error" in (a.log_dir / "agentainer.jsonl").read_text()
+
+
+def test_control_offset_roundtrip_and_bad(tmp_path):
+    telegram._save_control_offset(11)
+    assert telegram._load_control_offset() == 11
+    telegram._control_offset_path().write_text("{ broken")
+    assert telegram._load_control_offset() == 0
+
+
+def test_start_control_poller(tmp_path, monkeypatch):
+    assert telegram.start_control_poller(lambda: {}) is None      # no swarms
+    a = _tg_swarm(tmp_path, "aa")
+    monkeypatch.setattr(telegram, "is_enabled", lambda c: False)  # disabled bot
+    assert telegram.start_control_poller(lambda: {"aa": a}) is None
+    monkeypatch.undo()
+    monkeypatch.setattr(telegram, "control_poll_once", lambda *a, **k: 0)
+    p = telegram.start_control_poller(lambda: {"aa": a})
+    assert p is not None
+    p.stop()
+
+
+def test_control_poller_run_success_then_stop(tmp_path, monkeypatch):
+    a = _tg_swarm(tmp_path, "aa")
+    p = telegram.ControlPoller(lambda: {"aa": a})
+    def once(swarms, long_poll=0):
+        p._stop.set()
+        return 0
+    monkeypatch.setattr(telegram, "control_poll_once", once)
+    p._run()
+
+
+def test_control_poller_run_exception_path(tmp_path, monkeypatch):
+    a = _tg_swarm(tmp_path, "aa")
+    p = telegram.ControlPoller(lambda: {"aa": a})
+    monkeypatch.setattr(telegram, "control_poll_once",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("net")))
+    monkeypatch.setattr(p._stop, "wait", lambda t: p._stop.set())
+    p._run()

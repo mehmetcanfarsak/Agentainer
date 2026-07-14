@@ -27,3 +27,5 @@ quickstart-workspace/
 
 # Build handoff note (not shipped)
 .build-status.md
+
+.mcp.json

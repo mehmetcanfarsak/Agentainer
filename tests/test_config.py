@@ -270,12 +270,14 @@ def test_can_talk_to_wildcard_expands(tmp_path):
         tmp_path,
     )
     a = cfg.get("A")
-    assert set(a.can_talk_to) == {"B", "C"}
+    # `*` expands to every other agent AND the reserved `user` mailbox, so a
+    # wildcard orchestrator can always report back to the human.
+    assert set(a.can_talk_to) == {"B", "C", "user"}
 
 
 def test_can_talk_to_wildcard_preserves_explicit_user(tmp_path):
-    # `*` covers agents only; an explicitly-listed `user` alongside it must
-    # survive expansion, or the agent is denied mail the config plainly granted.
+    # `*` now includes `user`; an explicitly-listed `user` alongside it dedupes
+    # cleanly (no duplicate) rather than being dropped.
     cfg = load_config(
         "swarm: {root: ./ws}\n"
         "defaults: {type: claude}\n"
@@ -285,6 +287,7 @@ def test_can_talk_to_wildcard_preserves_explicit_user(tmp_path):
         tmp_path,
     )
     a = cfg.get("A")
+    assert a.can_talk_to.count("user") == 1  # deduped, present exactly once
     assert set(a.can_talk_to) == {"B", "user"}
 
 
@@ -926,3 +929,52 @@ def test_telegram_not_a_mapping(tmp_path):
             "agents:\n  - {name: A, command: 'true'}\n",
             tmp_path,
         )
+
+
+# --------------------------- global (registry-backed) telegram fallback
+
+_NO_TELEGRAM_YAML = (
+    "swarm: {root: ./ws}\n"
+    "defaults: {type: claude}\n"
+    "agents:\n  - {name: A, command: 'true'}\n"
+)
+
+
+def test_telegram_falls_back_to_global(tmp_path):
+    # No per-swarm `telegram:` block -> the shared control-plane bot (stored in
+    # the global registry settings) is used. State dir is isolated per test.
+    import registry
+
+    registry.set_global_telegram(
+        enabled=True, bot_token="G:tok", chat_id="777", mirror_system=True
+    )
+    cfg = load_config(_NO_TELEGRAM_YAML, tmp_path)
+    assert cfg.telegram.enabled is True
+    assert cfg.telegram.bot_token == "G:tok"
+    assert cfg.telegram.chat_id == "777"
+    assert cfg.telegram.mirror_system is True
+
+
+def test_telegram_per_swarm_block_overrides_global(tmp_path):
+    import registry
+
+    registry.set_global_telegram(enabled=True, bot_token="G:tok", chat_id="777")
+    cfg = load_config(
+        "swarm: {root: ./ws}\n"
+        "telegram: {enabled: false, bot_token: 'S:tok', chat_id: '111'}\n"
+        "defaults: {type: claude}\n"
+        "agents:\n  - {name: A, command: 'true'}\n",
+        tmp_path,
+    )
+    # the per-swarm block wins over the global one entirely
+    assert cfg.telegram.enabled is False
+    assert cfg.telegram.bot_token == "S:tok"
+    assert cfg.telegram.chat_id == "111"
+
+
+def test_telegram_disabled_when_no_block_and_no_global(tmp_path):
+    # No per-swarm block AND no global setting -> disabled defaults.
+    cfg = load_config(_NO_TELEGRAM_YAML, tmp_path)
+    assert cfg.telegram.enabled is False
+    assert cfg.telegram.bot_token == ""
+    assert cfg.telegram.chat_id == ""

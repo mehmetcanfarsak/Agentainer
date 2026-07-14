@@ -32,11 +32,14 @@ from config import ConfigError  # noqa: E402
 import hooks  # noqa: E402
 import log  # noqa: E402
 import mail  # noqa: E402
+import mcp as mcpmod  # noqa: E402
 import sessions  # noqa: E402
 import tmux  # noqa: E402
 import turn  # noqa: E402
 import ui  # noqa: E402
 import reconcile  # noqa: E402
+import registry  # noqa: E402
+import scaffold  # noqa: E402
 
 # Repo root: AGENTAINER_HOME overrides, else this file's grandparent (lib/..).
 AGENTAINER_HOME = Path(
@@ -278,17 +281,26 @@ def launch_agent_full(cfg, agent, resume_cmd: str | None = None) -> None:
 # --------------------------------------------------------------------------
 
 
-def cmd_up(args) -> int:
-    cfg = cfgmod.load(args.config)
-    if not shutil.which("tmux"):
-        die("tmux is required but was not found on PATH")
+def up_config(cfg, only=None, resume=None, restart=False, supervise=True) -> list:
+    """Bring *cfg* up and return the list of Agents actually (re)started.
 
-    selected = select_agents(cfg, args.only)
+    The authoritative launch path shared by ``cmd_up`` (CLI) and the UI's
+    whole-swarm ``/api/swarms/up``: create runtime dirs + mailboxes, register the
+    swarm in the global control-plane registry (so ``serve`` lists it), launch
+    each selected agent with per-type turn detection, and start the liveness
+    supervisor. tmux is assumed present (the caller checks); this never exits the
+    process.
+    """
+    selected = select_agents(cfg, only)
     for message in cfg.warnings:
         warn(message)
 
     for directory in (cfg.runtime, cfg.log_dir, cfg.queue_dir, cfg.run_dir):
         directory.mkdir(parents=True, exist_ok=True)
+
+    # A swarm that has been brought up is one the control plane should know about,
+    # so a single `serve` (no -c) can list and open it. Idempotent.
+    registry.register(cfg.name, cfg.path)
 
     # Set the globals the agent panes inherit, then tear the holder down once
     # the real sessions keep the tmux server alive.
@@ -299,21 +311,21 @@ def cmd_up(args) -> int:
     # `swarm.resume: false` in the config disables it. `explicit_resume` tracks
     # whether the operator asked for it on purpose, so we only nag about a missing
     # conversation when they did -- a default first launch is silent.
-    explicit_resume = args.resume is True
-    resume = cfg.resume if args.resume is None else args.resume
-    recorded = sessions.read_sessions(cfg) if resume else {}
+    explicit_resume = resume is True
+    do_resume = cfg.resume if resume is None else resume
+    recorded = sessions.read_sessions(cfg) if do_resume else {}
 
     started: list = []
     for agent in selected:
         if tmux.session_exists(agent.session):
-            if not getattr(args, "restart", False):
+            if not restart:
                 warn(f"{agent.name}: session {agent.session!r} already exists, skipping")
                 continue
             info(f"{agent.name}: restarting")
             tmux.tmux("kill-session", "-t", f"={agent.session}", check=False, capture=True)
 
         resume_cmd = None
-        if resume:
+        if do_resume:
             session_id = (recorded.get(agent.name) or {}).get("session_id")
             if not session_id:
                 if explicit_resume:
@@ -338,31 +350,46 @@ def cmd_up(args) -> int:
     if setup_holder:
         tmux.tmux("kill-session", "-t", f"={setup_holder}", check=False, capture=True)
 
-    if not started:
-        info("nothing to start")
-        return 0
-
     # The supervisor is the heartbeat the event-driven design lacks: it reconciles
     # dead/stale agents on a timer so one silent agent cannot wedge the swarm.
-    if cfg.supervise and not getattr(args, "no_supervise", False):
+    if started and cfg.supervise and supervise:
         try:
             _import_supervisor().start_supervisor(cfg, [a.name for a in started])
         except ImportError:
             warn("supervisor module not available; running without the liveness supervisor")
 
+    return started
+
+
+def cmd_up(args) -> int:
+    cfg = cfgmod.load(args.config)
+    if not shutil.which("tmux"):
+        die("tmux is required but was not found on PATH")
+
+    started = up_config(
+        cfg,
+        only=args.only,
+        resume=args.resume,
+        restart=getattr(args, "restart", False),
+        supervise=not getattr(args, "no_supervise", False),
+    )
+
+    if not started:
+        info("nothing to start")
+        return 0
+
     print()
     info(f"swarm {cfg.name!r} is up with {len(started)} agent(s)")
-    if started:
-        info(f"attach with:  tmux attach -t {started[0].session}")
-        # Surface the exact serve command so the operator doesn't have to recall
-        # the flags. A token is required for any non-loopback bind (CLAUDE.md
-        # invariant), so we generate one and print it -- drop --host/--token for
-        # the safe 127.0.0.1-only bind.
-        token = gen_ui_token()
-        info(
-            "you can use the UI with:  agentainer serve --host 0.0.0.0 "
-            f"-c {cfg.path} --token {token} --port 8000"
-        )
+    info(f"attach with:  tmux attach -t {started[0].session}")
+    # Surface the exact serve command so the operator doesn't have to recall the
+    # flags. A token is required for any non-loopback bind (CLAUDE.md invariant),
+    # so we generate one and print it -- drop --host/--token for the safe
+    # 127.0.0.1-only bind.
+    token = gen_ui_token()
+    info(
+        "you can use the UI with:  agentainer serve --host 0.0.0.0 "
+        f"-c {cfg.path} --token {token} --port 8000"
+    )
     return 0
 
 
@@ -760,12 +787,25 @@ def cmd_serve(args) -> int:
     (enforced inside ``ui.run_server``). The token comes from ``--token``, else
     ``AGENTAINER_UI_TOKEN``, else a freshly generated one printed to stderr.
     """
-    cfg = cfgmod.load(args.config)
     token = args.token or os.environ.get("AGENTAINER_UI_TOKEN") or gen_ui_token()
     host = args.host or "127.0.0.1"
     port = args.port or 0
-    handle = ui.run_server(cfg, token, host=host, port=port, background=True)
+
+    # One serve manages EVERY registered swarm on the machine. An explicit
+    # `-c PATH` (or a local ./agentainer.yaml resolved by default_config) is
+    # folded in and registered too, so `serve` from a swarm dir always includes
+    # that swarm even before its first `up`.
+    swarms = registry.load_all()
+    cfgpath = getattr(args, "config", None)
+    if cfgpath and Path(cfgpath).is_file():
+        cfg = cfgmod.load(cfgpath)
+        registry.register(cfg.name, cfg.path)
+        swarms[cfg.name] = cfg
+
+    handle = ui.run_server(token=token, host=host, port=port, background=True, swarms=swarms)
     info(f"UI serving at {handle.url}")
+    listed = ", ".join(sorted(swarms)) or "(none yet -- create one in the UI)"
+    info(f"managing {len(swarms)} swarm(s): {listed}")
     info(f"UI token: {token}")
     try:
         while True:
@@ -773,6 +813,164 @@ def cmd_serve(args) -> int:
     except KeyboardInterrupt:
         handle.shutdown()
     return 0
+
+
+def cmd_mcp(args) -> int:
+    """Run the MCP (Model Context Protocol) server on stdin/stdout.
+
+    This is the surface a **coding agent** uses to monitor and manage every
+    swarm on the machine. Configure it in the agent's MCP settings, e.g.::
+
+        {"mcpServers": {"agentainer": {"command": "agentainer", "args": ["mcp"]}}}
+
+    It needs no running ``serve`` -- it operates directly over the global swarm
+    registry. (The same tool set is also exposed over HTTP at ``POST /mcp`` on a
+    running ``serve`` control plane.)
+    """
+    return mcpmod.serve_stdio()
+
+
+# --------------------------------------------------------------------------
+# swarms: multi-swarm registry management (CLI parity with the UI dashboard)
+# --------------------------------------------------------------------------
+
+
+def cmd_swarms(args) -> int:
+    """Dispatch ``swarms <subcommand>`` (list|create|register|remove|up|down|build|approve)."""
+    return _SWARMS_DISPATCH[args.swarms_cmd](args)
+
+
+def cmd_swarms_list(args) -> int:
+    entries = registry.list_entries()
+    if not entries:
+        info("no swarms registered yet (create one: agentainer swarms create <name>)")
+        return 0
+    for e in entries:
+        name = e.get("name")
+        try:
+            cfg = cfgmod.load(e["path"])
+        except ConfigError as exc:
+            print(f"{name}\t(invalid: {exc})\t{e['path']}")
+            continue
+        running = sum(1 for a in cfg.agents if tmux.session_exists(a.session))
+        print(f"{name}\t{running}/{len(cfg.agents)} running\t{e['path']}")
+    return 0
+
+
+def cmd_swarms_create(args) -> int:
+    try:
+        path = registry.create_swarm(args.name, root=args.root, template=args.template)
+    except (ValueError, ConfigError) as exc:
+        die(str(exc))
+    info(f"created swarm {args.name!r} at {path}")
+    if getattr(args, "up", False):
+        if not shutil.which("tmux"):
+            die("tmux is required but was not found on PATH")
+        started = up_config(cfgmod.load(path))
+        info(f"up: started {len(started)} agent(s)")
+    return 0
+
+
+def cmd_swarms_register(args) -> int:
+    try:
+        cfg = cfgmod.load(args.path)
+    except ConfigError as exc:
+        die(str(exc))
+    registry.register(cfg.name, cfg.path)
+    info(f"registered swarm {cfg.name!r} ({cfg.path})")
+    return 0
+
+
+def cmd_swarms_remove(args) -> int:
+    if registry.unregister(args.name):
+        info(f"removed swarm {args.name!r} from the registry (config files left on disk)")
+        return 0
+    warn(f"swarm {args.name!r} was not registered")
+    return 1
+
+
+def cmd_swarms_up(args) -> int:
+    if not shutil.which("tmux"):
+        die("tmux is required but was not found on PATH")
+    try:
+        cfg = registry.resolve(args.name)
+    except KeyError:
+        die(f"swarm {args.name!r} is not registered")
+    started = up_config(cfg)
+    info(f"swarm {cfg.name!r}: started {len(started)} agent(s)")
+    return 0
+
+
+def cmd_swarms_down(args) -> int:
+    try:
+        cfg = registry.resolve(args.name)
+    except KeyError:
+        die(f"swarm {args.name!r} is not registered")
+    try:
+        _import_supervisor().stop_supervisor(cfg)
+    except ImportError:
+        pass
+    stopped = reconcile.stop_all(cfg)
+    info(f"swarm {cfg.name!r}: stopped {len(stopped)} agent(s)")
+    return 0
+
+
+def cmd_swarms_build(args) -> int:
+    """Open an interactive builder session so a coding-agent writes the config."""
+    if not shutil.which("tmux"):
+        die("tmux is required but was not found on PATH")
+    try:
+        cfg = registry.resolve(args.name)
+    except KeyError:
+        die(f"swarm {args.name!r} is not registered")
+    try:
+        session = scaffold.open_builder_session(
+            cfg,
+            agent_type=args.agent,
+            agent_command=args.command,
+            mode=args.mode,
+            notes=args.notes or "",
+        )
+    except (ValueError, ConfigError) as exc:
+        die(str(exc))
+    info(f"builder session for {cfg.name!r} started: {session}")
+    info(f"attach and talk to it with:  tmux attach -t {session}")
+    info(f"when the config is ready, run:  agentainer swarms approve {cfg.name}")
+    return 0
+
+
+def cmd_swarms_approve(args) -> int:
+    """Validate a built swarm's config, close the builder, and bring it up."""
+    if not shutil.which("tmux"):
+        die("tmux is required but was not found on PATH")
+    result = scaffold.approve_swarm(args.name)
+    if not result.get("ok"):
+        die(result.get("error") or "approval failed")
+    started = result.get("started") or []
+    info(f"swarm {args.name!r}: approved, started {len(started)} agent(s)")
+    return 0
+
+
+def cmd_swarms_use(args) -> int:
+    """Set the Telegram-active swarm (which swarm bare /commands target)."""
+    if registry.entry(args.name) is None:
+        die(f"swarm {args.name!r} is not registered")
+    registry.set_active_swarm(args.name)
+    info(f"active swarm is now {args.name!r}")
+    return 0
+
+
+_SWARMS_DISPATCH = {
+    "list": cmd_swarms_list,
+    "use": cmd_swarms_use,
+    "create": cmd_swarms_create,
+    "register": cmd_swarms_register,
+    "remove": cmd_swarms_remove,
+    "up": cmd_swarms_up,
+    "down": cmd_swarms_down,
+    "build": cmd_swarms_build,
+    "approve": cmd_swarms_approve,
+}
 
 
 # --------------------------------------------------------------------------
@@ -877,10 +1075,47 @@ def build_parser() -> argparse.ArgumentParser:
     p_sup = add("supervise", cmd_supervise, "internal: background liveness watchdog")
     p_sup.add_argument("names", nargs="*", help="agents to watch (default: all)")
 
-    p_serve = add("serve", cmd_serve, "serve the HTTP control-plane UI (observability)")
+    p_serve = add("serve", cmd_serve, "serve the multi-swarm HTTP control-plane UI")
     p_serve.add_argument("--host", default=None, help="bind host (default: 127.0.0.1)")
     p_serve.add_argument("--port", type=int, default=0, help="port (default: auto)")
     p_serve.add_argument("--token", default=None, help="auth token (default: env or random)")
+
+    add("mcp", cmd_mcp,
+        "run the MCP server on stdin/stdout so a coding agent can manage the swarms")
+
+    # Multi-swarm registry management (parity with the UI's swarm dashboard).
+    p_swarms = add("swarms", cmd_swarms,
+                   "manage swarms: list|create|register|remove|up|down|build|approve")
+    sw = p_swarms.add_subparsers(dest="swarms_cmd", required=True)
+    # Nested subparsers don't inherit the top-level -c, so add it to each.
+    p_sw_list = sw.add_parser("list", help="list every registered swarm + live status")
+    p_sw_list.add_argument("-c", "--config", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    p_sw_create = sw.add_parser("create", help="scaffold a fresh swarm and register it")
+    p_sw_create.add_argument("name", help="new swarm name")
+    p_sw_create.add_argument("--root", default=None, help="workspace root (default: ./workspace)")
+    p_sw_create.add_argument("--template", default=None, help="seed from a bundled example (examples/<name>)")
+    p_sw_create.add_argument("--up", action="store_true", help="bring the new swarm up immediately")
+    p_sw_create.add_argument("-c", "--config", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    p_sw_reg = sw.add_parser("register", help="register an existing agentainer.yaml by path")
+    p_sw_reg.add_argument("path", help="path to an agentainer.yaml")
+    p_sw_reg.add_argument("-c", "--config", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    for _sw_name in ("remove", "up", "down", "use"):
+        _p = sw.add_parser(_sw_name)
+        _p.add_argument("name", help="swarm name")
+        _p.add_argument("-c", "--config", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    p_sw_build = sw.add_parser("build", help="open an interactive builder session for a swarm")
+    p_sw_build.add_argument("name", help="swarm name")
+    p_sw_build.add_argument("--agent", default=None,
+                            help="coding-agent type (claude|codex|gemini|hermes)")
+    p_sw_build.add_argument("--command", default=None,
+                            help="explicit launch command (your real alias); overrides --agent's default")
+    p_sw_build.add_argument("--mode", default="adapt", choices=["adapt", "scratch"],
+                            help="adapt an existing config or build one from scratch")
+    p_sw_build.add_argument("--notes", default="", help="what you want the swarm to do")
+    p_sw_build.add_argument("-c", "--config", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    p_sw_approve = sw.add_parser("approve", help="validate a built swarm and bring it up")
+    p_sw_approve.add_argument("name", help="swarm name")
+    p_sw_approve.add_argument("-c", "--config", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
 
     # P4: dynamic reconcile -- add / remove / edit agents at runtime.
     p_add = add("add", reconcile.cmd_add, "add an agent to the config and bring it up")

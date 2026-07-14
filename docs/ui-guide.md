@@ -1,9 +1,17 @@
 # The Agentainer UI — HTTP control plane (`agentainer serve`)
 
-Agentainer ships an optional web UI: a **control plane** for a running swarm.
-It lets you watch every agent, read the mail flowing between them, peek at each
-agent's live terminal, send mail as the `user`, and reshape the swarm
+Agentainer ships an optional web UI: a **control plane** for every swarm on the
+machine. It lets you watch every agent, read the mail flowing between them, peek
+at each agent's live terminal, send mail as the `user`, and reshape a swarm
 (add/remove/edit agents) — all from a browser.
+
+> 🐝 **One `serve`, every swarm.** A single `agentainer serve` manages all your
+> swarms: the home screen is a **swarms dashboard** with a **switcher** that
+> scopes every view, plus **➕ New Swarm** — create one from a bundled example
+> (edit the YAML inline) or by talking to a **coding-agent in an in-browser
+> terminal** that writes the config for you. Sensible defaults run it out of the
+> box; rarely-touched knobs live under **"Configure Advanced Settings."** Full
+> details: [multi-swarm.md](multi-swarm.md).
 
 > **Read this first — the UI is a control plane, not a viewer.** It can start
 > and stop agent processes, type raw keystrokes into panes (agents that may run

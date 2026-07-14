@@ -214,7 +214,10 @@ agents and documented honestly, not a security boundary.
 - A list enumerates allowed recipients: real agent names, plus `"user"` (the human
   virtual mailbox). `"system"` is **never** allowed (it is orchestrator-only) — a
   config that lists `system` fails to load. An agent may not list itself.
-- `"*"` expands to every *other* real agent (not `user`, not `system`, not itself).
+- `"*"` expands to every *other* real agent **plus `user`** (so a wildcard agent
+  — typically an orchestrator — can always report back to the human). It never
+  includes `system` (orchestrator-only) or itself. To reach only agents but not
+  the human, list them explicitly instead of using `"*"`.
 - The orchestrator creates an `outbox/<name>/` folder for each allowed peer, and
   reads `outbox/<name>/about.md` (a contact card) so the agent knows who is there.
 

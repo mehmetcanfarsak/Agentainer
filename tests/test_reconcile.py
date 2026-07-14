@@ -285,8 +285,9 @@ def test_add_agent_wildcard_and_workdir(tmp_path):
     new = reconcile.add_agent(
         cfg, "dave", "codex", "codex", "*", workdir=str(tmp_path / "dave-wd")
     )
-    # "*" expands to every *other* configured agent (Pass 2 of config.load).
-    assert set(new.get("dave").can_talk_to) == {"alice", "bob"}
+    # "*" expands to every *other* configured agent PLUS the user (Pass 2 of
+    # config.load) so a wildcard agent can always report back to the human.
+    assert set(new.get("dave").can_talk_to) == {"alice", "bob", "user"}
     assert new.get("dave").workdir == tmp_path / "dave-wd"
 
 

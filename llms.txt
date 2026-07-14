@@ -53,7 +53,9 @@ mailroom route mail safely. Swap each `command` for a real agent CLI to run for 
 - `user` — toggle `user` availability (`available`/`away`/`inbox`/`send`).
 - `queue` / `inbox` / `idle` — inspect pending mail, current inbox, idle agents.
 - `hook` / `watch` / `supervise` — turn-completion hook, live pane watch, liveness supervisor.
-- `serve` — mail-app control-plane UI on `127.0.0.1` (per-agent threaded mail rendered as markdown with delivery status, reply as `user`, activity timeline + topology graph, live tmux pane + direct type-in, availability toggle, swarm-settings & agent add/edit/delete written back to YAML, and an optional stdlib Telegram bridge that mirrors mail out and routes phone replies back as `user` mail); token required for non-loopback.
+- `serve` — **multi-swarm** mail-app control-plane UI on `127.0.0.1`; ONE server manages every swarm on the machine (global registry + shared settings under `~/.agentainer/`, override `$AGENTAINER_STATE_DIR`; every API route is swarm-scoped via `?swarm=`). Swarms dashboard + switcher, guided create flow (from a bundled example, edit YAML inline, or an interactive coding-agent builder session), per-agent threaded mail (markdown + delivery status, reply as `user`), activity timeline + topology, live tmux pane + type-in, availability toggle, swarm-settings/agent add-edit-delete written back to YAML, and one shared stdlib Telegram bridge; token required for non-loopback. `serve -c one.yaml` still serves a single swarm.
+- `swarms` — manage every swarm: `list`, `create <name> [--template <example>] [--root] [--up]`, `register <path>`, `remove <name>`, `up <name>`, `down <name>`, `build <name> --agent <cli> [--mode adapt|scratch]` (open an interactive coding-agent builder session), `approve <name>` (validate the built config + up), `use <name>` (set the Telegram-active swarm).
+- `mcp` — run the **MCP (Model Context Protocol) server** on stdin/stdout so a *coding agent* can monitor and manage every swarm. JSON-RPC 2.0 (`initialize`/`tools/list`/`tools/call`/`ping`); operates over the global registry, no running `serve` needed. Config: `{"mcpServers":{"agentainer":{"command":"agentainer","args":["mcp"]}}}`. Same tools also at `POST /mcp` on `serve` (Bearer token). See `docs/mcp.md`.
 - `add <name> --type T --command C --can-talk-to X` — add an agent to the config and bring it up.
 - `edit <name> -s key=value` — edit an agent's fields and reconcile.
 - `remove <name>` — remove an agent and stop its session.
@@ -65,6 +67,19 @@ UI (stdlib `http.server` + one vanilla-JS page; no framework, no build). It show
 swarm/agent status, logs, inbox, queue, a live terminal snapshot of each agent's tmux
 pane, and lets you inject mail as the `user` mailbox. Binds `127.0.0.1` by default;
 a token is required for any non-loopback bind (the UI is a control plane).
+
+## 🤖 MCP — manage from a coding agent
+The fourth control plane (CLI / UI / Telegram / MCP), a permanent maintained surface:
+a coding agent monitors and manages every swarm over the Model Context Protocol.
+`lib/mcp.py` is a thin JSON-RPC 2.0 adapter over the same `lib/` core (never its own
+copy of the logic). Two transports, one tool set: `agentainer mcp` (stdio; no `serve`
+needed, works over the registry) and `POST /mcp` on `serve` (Bearer token, POST-only —
+`GET /mcp` is 405). Tools: monitor (`list_swarms`, `swarm_status`, `read_inbox`,
+`read_queue`, `read_user_inbox`, `agent_logs`, `capture_pane`, `read_config`) and manage
+(`send_message`, `set_availability`, `start_agent`, `stop_agent`, `up_swarm`, `down_swarm`,
+`create_swarm`, `add_agent`, `remove_agent`). Each takes an optional `swarm` (required only
+when >1 swarm is managed). Tool errors return `isError` results (not JSON-RPC errors) so the
+model self-corrects, like `system` mail. See `docs/mcp.md`.
 
 ## 🔄 Dynamic reconcile (P4)
 Change the swarm without a full teardown: `add`/`remove`/`edit` rewrite `agentainer.yaml`
@@ -144,4 +159,5 @@ These are observed, load-bearing behaviours of the shipping CLI. An LLM patching
 ## 📚 Docs
 - `ProjectPlan.md` — the design (source of truth).
 - `README.md` — user-facing overview, install, commands, FAQ.
+- `docs/mcp.md` — the MCP surface (tools, transports, protocol) for coding agents.
 - v1 reference (read-only): `/root/AgentSwarm/docs/PROJECT-DOCUMENTATION.md`.

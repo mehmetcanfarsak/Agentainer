@@ -40,6 +40,7 @@ availability, the durable log).
 - [Commands](#commands)
 - [Key invariants](#key-invariants)
 - [The control-plane UI (P2–P3)](#the-control-plane-ui-p2p3)
+- [Manage it from a coding agent (MCP)](#manage-it-from-a-coding-agent-mcp)
 - [Dynamic reconcile (P4)](#dynamic-reconcile-p4)
 - [Project status](#project-status)
 - [FAQ](#faq)
@@ -146,6 +147,15 @@ Ready-to-run showcases:
 | [`daily-briefing`](examples/daily-briefing.yaml) · [guide](docs/use-cases/daily-briefing.md) | A morning digest, self-triggered on a weekday + weekend schedule. |
 | [`ops-watchtower`](examples/ops-watchtower.yaml) · [guide](docs/use-cases/ops-watchtower.md) | High-frequency `*/15` monitoring with `skip` + overnight `queue`. |
 | [`content-cadence`](examples/content-cadence.yaml) · [guide](docs/use-cases/content-cadence.md) | Cron as a *weekly calendar* — day-of-week and day-of-month scheduling. |
+| [`data-quality-guardian`](examples/data-quality-guardian.yaml) · [guide](docs/use-cases/data-quality-guardian.md) | A self-driving monitor — business-hours `skip` sweep + overnight `queue` deep check. |
+| [`cloud-cost-optimizer`](examples/cloud-cost-optimizer.yaml) · [guide](docs/use-cases/cloud-cost-optimizer.md) | FinOps cadence — a weekly cost-review ping (`when_busy: skip`). |
+| [`chaos-game-day`](examples/chaos-game-day.yaml) · [guide](docs/use-cases/chaos-game-day.md) | Pre-approved, reversible fault injection on a schedule. |
+| [`vuln-triage`](examples/vuln-triage.yaml) · [guide](docs/use-cases/vuln-triage.md) | Daily CVE scan → risk rank → patch plan. |
+| [`fp-and-a-analyst`](examples/fp-and-a-analyst.yaml) · [guide](docs/use-cases/fp-and-a-analyst.md) | Monthly-close variance + forecast-narrative ping. |
+
+The full catalog of runnable recipes — now 96 `examples/*.yaml`, each with a
+walkthrough under [`docs/use-cases/`](docs/use-cases/) — is indexed in
+[`docs/README.md`](docs/README.md).
 
 ## 🏗️ Architecture
 
@@ -192,7 +202,9 @@ agentainer.yaml  ──▶  agentainer up  ──▶  one tmux session + workdir
 | 👀 `watch` | Live-watch the supervisor. |
 | 💗 `supervise` | Run one (or the loop of) supervisor tick(s). |
 | 👤 `user` | Toggle `user` availability. |
-| 🌐 `serve` | Serve the mail-app control-plane UI (threads, settings/agent editing, availability, direct-to-pane) on `127.0.0.1`. |
+| 🌐 `serve` | Serve the **multi-swarm** mail-app control-plane UI (every swarm on the machine, create/launch swarms, settings, direct-to-pane) on `127.0.0.1`. |
+| 🤖 `mcp` | Run the **MCP server** on stdin/stdout so a *coding agent* can monitor and manage every swarm (also at `POST /mcp` on `serve`). |
+| 🐝 `swarms` | Manage every swarm on the machine: `list`, `create [--template]`, `register`, `remove`, `up`, `down`, `build` (coding-agent scaffolds it), `approve`, `use`. |
 | ➕ `add` | Add an agent to the config (YAML) and bring it up immediately. |
 | 🗑️ `remove` | Remove an agent from the config and stop its session. |
 | ✏️ `edit` | Edit an agent's fields in the config (`-s key=value`, repeatable) and reconcile. |
@@ -219,14 +231,28 @@ design (source of truth).
 
 ## 🖥️ The control-plane UI (P2–P3)
 
-`agentainer serve -c my-swarm.yaml --port 8080 --token <secret>` starts a
-**zero-dependency** web UI (stdlib `http.server` + a single vanilla-JS page, no
-framework, no build step). It binds `127.0.0.1` by default; any non-loopback bind
-requires a token. The UI is a control plane, so keep it on loopback unless a
-token is supplied.
+`agentainer serve` starts a **zero-dependency** web UI (stdlib `http.server` + a
+single vanilla-JS page, no framework, no build step). It binds `127.0.0.1` by
+default; any non-loopback bind requires a token. The UI is a control plane, so
+keep it on loopback unless a token is supplied.
 
-It is a **modern, mobile-friendly mail app** for the swarm:
+**One `serve` runs your whole machine.** It manages **every swarm at once** (a
+global registry under `~/.agentainer/`, overridable with `$AGENTAINER_STATE_DIR`)
+— no need to run a server per swarm or pass `-c`. Any swarm you `up` (from any
+directory) auto-registers and appears in the dashboard. It runs **out of the
+box**: land on an empty dashboard and create your first swarm in a few clicks;
+sensible defaults everywhere, with the rarely-touched knobs tucked under
+**"Configure Advanced Settings."**
 
+- **Swarms dashboard** — a card per swarm (running/total agents, attention,
+  Start-all / Stop-all, Open), plus a prominent **➕ New Swarm**. A header
+  **swarm switcher** scopes every view to the selected swarm.
+- **Create a swarm, three ways** — start from one of the **bundled example
+  configs** (preview the YAML and **edit it yourself**), or **have a coding-agent
+  build it for you**: pick a CLI (`claude`/`codex`/`gemini`/`hermes`), and
+  Agentainer opens an **interactive tmux session** you talk to *in the browser*
+  ("adapt this example…" or "design a swarm that…"). It writes the
+  `agentainer.yaml`; click **Approve & Launch** to bring it up.
 - **Agents overview** — a card per agent with its role, type, and live
   running/idle/busy/unread/queue status.
 - **Mail view** — click an agent to open its correspondence. The left rail lists
@@ -243,11 +269,43 @@ It is a **modern, mobile-friendly mail app** for the swarm:
 - **Settings & agents** — edit swarm settings and **add / edit / delete agents**
   from the UI; every change is written back to `agentainer.yaml` (via the same
   stdlib emitter, so it works with **or without** PyYAML).
-- **Telegram bridge** *(optional)* — configure a bot token + chat id in Settings
-  to **mirror** the swarm's mail (all agents or a selected set, plus your own
-  mail) to a Telegram chat, and **reply from your phone**: a Telegram message
-  reply routes back into the swarm as `user` mail. Stdlib `urllib` only — no new
-  dependency; the mirror is best-effort so the network can never stall routing.
+- **Telegram bridge** *(optional, shared across all swarms)* — configure **one**
+  bot token + chat id once (in Settings → Telegram; stored globally in
+  `~/.agentainer/`) and **every** swarm shares it — a per-swarm `telegram:` block
+  still overrides it for heavy users. It **mirrors** mail to your chat and lets
+  you **drive any swarm from your phone**: reply to a mirrored message to answer
+  its sender, run slash-commands (`/status`, `/to`, `/up`, …), list swarms with
+  `/swarms`, and switch which swarm bare commands target with `/use <name>`. A
+  first-login nudge reminds you to enable it so you can *"use this system
+  everywhere."* Stdlib `urllib` only — no new dependency; best-effort so the
+  network can never stall routing.
+
+## 🤖 Manage it from a coding agent (MCP)
+
+Agentainer *manages* coding agents, so it also lets a coding agent **manage
+Agentainer** — over the **Model Context Protocol**. This is the fourth control
+plane (CLI / UI / Telegram / **MCP**), a permanent first-class surface with full
+parity: the same tools cover monitoring (`list_swarms`, `swarm_status`,
+`read_inbox`, `agent_logs`, `capture_pane`, …) and management (`send_message`,
+`up_swarm`/`down_swarm`, `start_agent`/`stop_agent`, `create_swarm`,
+`add_agent`/`remove_agent`, `set_availability`).
+
+Two transports, one tool set:
+
+- **stdio** — `agentainer mcp`. No running `serve` needed; it works over the
+  global swarm registry. Add it to your agent's MCP config (e.g. Claude Code's
+  `.mcp.json`):
+
+  ```json
+  {"mcpServers": {"agentainer": {"command": "agentainer", "args": ["mcp"]}}}
+  ```
+
+- **HTTP** — `POST /mcp` on a running `agentainer serve`, reusing the UI's Bearer
+  token.
+
+It's plain JSON-RPC 2.0 (zero new dependencies), and — like the mailroom's
+`system` mail — tool problems come back as readable `isError` results the model
+self-corrects on. Full guide: **[docs/mcp.md](docs/mcp.md)**.
 
 ## 🔄 Dynamic reconcile (P4)
 
@@ -269,6 +327,11 @@ agentainer reconcile -c my-swarm.yaml      # start missing agents, stop orphaned
 - **P2 — UI observability**: ✅ done.
 - **P3 — terminal snapshot + send-from-UI**: ✅ done.
 - **P4 — dynamic reconcile (`add`/`remove`/`edit`/`reconcile`)**: ✅ done.
+- **P5 — multi-swarm control plane (one `serve`, global registry + shared settings)**: ✅ done.
+- **P6 — guided swarm creation (examples, inline edit, coding-agent builder)**: ✅ done.
+- **P7 — redesigned beginner-friendly UI (swarm switcher, dashboard, advanced-settings collapse)**: ✅ done.
+- **P8 — shared Telegram across all swarms + CLI/UI/Telegram parity**: ✅ done.
+- **P9 — MCP server (fourth control plane: a coding agent manages the swarms)**: ✅ done.
 
 🎉 100% line coverage across all core + UI + reconcile modules, driven entirely by
 mock agents (no API keys).
@@ -298,6 +361,19 @@ PyYAML is used *if present*, but a bundled fallback parser (`minyaml`) keeps
 everything working without it, and CI proves that no-PyYAML path. `node` is only
 needed for the npm launcher, never at swarm runtime. Docker is optional and not
 required.
+
+**🤖 Can a coding agent monitor and manage Agentainer itself?**
+Yes — that's what the built-in **MCP (Model Context Protocol) server** is for, and
+it's a permanent first-class surface. Point any MCP-speaking agent (Claude Code,
+Cursor, …) at Agentainer and it gets tools to observe (`list_swarms`,
+`swarm_status`, `read_inbox`, `agent_logs`, `capture_pane`, …) and control
+(`send_message`, `up_swarm`/`down_swarm`, `start_agent`/`stop_agent`,
+`create_swarm`, `add_agent`/`remove_agent`, …) every swarm on the machine. Two
+transports: run `agentainer mcp` (stdio — add `{"mcpServers":{"agentainer":
+{"command":"agentainer","args":["mcp"]}}}` to your agent's config; no running
+server needed), or `POST /mcp` on a running `agentainer serve` (reuses the UI
+token). It's plain JSON-RPC 2.0 with zero new dependencies. See
+[docs/mcp.md](docs/mcp.md).
 
 **🚀 How do I run multiple coding agents together?**
 Write one `agentainer.yaml` listing each agent, then run `agentainer up -c

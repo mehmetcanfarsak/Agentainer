@@ -872,3 +872,165 @@ def start_poller(cfg):
     if not is_enabled(cfg):
         return None
     return Poller(cfg).start()
+
+
+# --------------------------------------------------------------------------
+# shared multi-swarm control-plane poller
+#
+# One `agentainer serve` manages every swarm, and they all share ONE Telegram
+# bot (the global registry setting merged into each cfg). A single inbound poller
+# therefore serves the whole machine: one offset (in the global state dir), one
+# getUpdates loop, and per-update routing to the right swarm. Outbound mirror is
+# unchanged -- each swarm still mirrors its own mail through the shared bot.
+# --------------------------------------------------------------------------
+
+
+def _control_offset_path() -> Path:
+    import registry  # lazy: registry imports config; avoid an import cycle
+
+    return registry.state_dir() / "telegram.offset.json"
+
+
+def _load_control_offset() -> int:
+    return int(_load_json(_control_offset_path(), {}).get("offset", 0))
+
+
+def _save_control_offset(offset: int) -> None:
+    _write_atomic(_control_offset_path(), json.dumps({"offset": offset}))
+
+
+def _primary_cfg(swarms: dict):
+    """The cfg the shared bot sends through + whose commands run by default.
+
+    The Telegram "active swarm" (settable with ``/use``) when it is still present,
+    else the first swarm. All swarms share the bot, so any cfg can send.
+    """
+    import registry
+
+    name = registry.active_swarm()
+    if name and name in swarms:
+        return swarms[name]
+    return next(iter(swarms.values()))
+
+
+def _control_command(swarms: dict, text: str):
+    """Handle the control-plane-only commands ``/swarms`` and ``/use``.
+
+    Returns the reply text, or ``None`` when *text* is an ordinary per-swarm
+    command (the caller dispatches that against the active swarm).
+    """
+    import registry
+
+    head, _, rest = text[1:].strip().partition(" ")
+    cmd = head.split("@", 1)[0].lower()
+    if cmd == "swarms":
+        active = registry.active_swarm()
+        lines = [("→ " if n == active else "  ") + n for n in sorted(swarms)]
+        return "swarms managed by this control plane:\n" + ("\n".join(lines) or "(none)")
+    if cmd == "use":
+        name = rest.strip()
+        if name not in swarms:
+            return f"unknown swarm {name!r} — send /swarms to list them"
+        registry.set_active_swarm(name)
+        return f"✓ active swarm is now {name!r} — /commands now target it"
+    return None
+
+
+def _process_control_update(swarms: dict, upd: dict) -> None:
+    """Route one update to the right swarm: a reply to its sender, a control
+    command (``/swarms`` ``/use``), or a per-swarm command against the active
+    swarm; a plain message is acknowledged with how to route one."""
+    msg = upd.get("message") or upd.get("channel_post")
+    if not isinstance(msg, dict):
+        return
+    text = msg.get("text")
+    if not text:
+        return
+    primary = _primary_cfg(swarms)
+    chat_id = str((msg.get("chat") or {}).get("id", ""))
+    if chat_id != str(primary.telegram.chat_id):
+        return
+
+    # A reply may belong to ANY swarm -- find the one whose replymap holds it.
+    reply = msg.get("reply_to_message")
+    if isinstance(reply, dict):
+        mid = reply.get("message_id")
+        for cfg in swarms.values():
+            target = _reply_target(cfg, mid)
+            if target and _route_user_reply(cfg, target["agent"], text):
+                send_message(cfg, f"✓ delivered to {target['agent']} [{cfg.name}]")
+                return
+
+    if text.startswith("/"):
+        ctl = _control_command(swarms, text)
+        if ctl is not None:
+            _send_chunked(primary, ctl)
+            return
+        try:
+            out = _dispatch_command(primary, text)
+        except Exception as exc:  # noqa: BLE001 - a bad command must never wedge the loop
+            out = f"⚠️ {exc}"
+        _send_chunked(primary, f"[{primary.name}] {out}")
+        return
+
+    send_message(primary, "ℹ️ received, but not routed — reply to a mailed message to "
+                          "answer its sender, use /to <agent> <message>, /use <swarm> "
+                          "to switch swarms, or /help for commands.")
+
+
+def control_poll_once(swarms: dict, long_poll: int = 0) -> int:
+    """One shared getUpdates round across all *swarms*; returns updates handled."""
+    if not swarms:
+        return 0
+    primary = _primary_cfg(swarms)
+    if not is_enabled(primary):
+        return 0
+    params = {"offset": _load_control_offset(), "timeout": long_poll}
+    updates = api_call(primary, "getUpdates", params, timeout=long_poll + MIRROR_TIMEOUT_S)
+    n = 0
+    for upd in updates or []:
+        _save_control_offset(int(upd["update_id"]) + 1)
+        try:
+            _process_control_update(swarms, upd)
+        except Exception as exc:  # noqa: BLE001 - one bad update can't kill the loop
+            log.log_event(primary, "user", "telegram-error", error=str(exc)[:200])
+        n += 1
+    return n
+
+
+class ControlPoller:
+    """The shared inbound poller. ``provider()`` returns the live ``{name: cfg}``
+    so swarms created/removed while serving are picked up on the next loop."""
+
+    def __init__(self, provider):
+        self._provider = provider
+        self._stop = threading.Event()
+        self._thread = None
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                control_poll_once(self._provider(), long_poll=LONG_POLL_S)
+            except Exception:  # noqa: BLE001 - a transient network error must not kill the loop
+                self._stop.wait(3)
+
+    def start(self) -> "ControlPoller":
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+
+def start_control_poller(provider):
+    """Start the shared multi-swarm poller if the shared bot is enabled; else None.
+
+    *provider* is a zero-arg callable returning the current ``{name: cfg}`` set.
+    """
+    swarms = provider()
+    if not swarms or not is_enabled(_primary_cfg(swarms)):
+        return None
+    return ControlPoller(provider).start()

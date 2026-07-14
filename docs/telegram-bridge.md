@@ -259,6 +259,15 @@ All inbound modes only accept messages originating from your configured
 
 ---
 
+> 🐝 **Shared across all swarms.** Under the multi-swarm control plane (a single
+> `agentainer serve`), **one** bot serves every swarm — configure it once in the
+> global settings (Settings → Telegram, stored in `~/.agentainer/`); a per-swarm
+> `telegram:` block still overrides it. `/swarms` lists every swarm and `/use
+> <name>` switches which swarm bare commands target (same as `agentainer swarms
+> use <name>`). Replies always route to the correct swarm automatically, and
+> mirrored messages are tagged with their swarm name. See
+> [multi-swarm.md](multi-swarm.md).
+
 ## 6a. Full command surface — Telegram = CLI = UI
 
 The bridge is a **complete control plane**, not just a notifier. Per Agentainer's
@@ -266,6 +275,10 @@ parity rule (`CLAUDE.md` principle #7), **anything you can do from the web UI or
 editing `agentainer.yaml`, you can do from Telegram** — because every command is a
 thin adapter over the same tested `lib/` core the CLI and UI call. Send `/help` in
 the chat for the live list.
+
+Two commands are specific to the multi-swarm control plane: **`/swarms`** (list
+every swarm, `→` marks the active one) and **`/use <name>`** (switch the active
+swarm that bare `/commands` target).
 
 > ⚠️ **This is a control plane with the same power as the UI.** From your phone you
 > can start/stop agents, type straight into sessions (including ones running

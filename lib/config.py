@@ -325,7 +325,17 @@ def _parse_mirror(value: Any) -> Any:
 
 
 def _load_telegram(data: dict) -> "TelegramConfig":
-    raw = data.get("telegram") or {}
+    raw = data.get("telegram")
+    if not raw:
+        # No per-swarm `telegram:` block -> fall back to the shared control-plane
+        # bot in the global registry settings, so every swarm can share a single
+        # Telegram setting. A per-swarm block always wins (heavy-user override).
+        # Lazy import: registry imports config, so importing it at module scope
+        # would cycle. registry.global_telegram() never raises (empty on any I/O
+        # error) and returns {} when no global store exists yet.
+        import registry  # noqa: PLC0415
+
+        raw = registry.global_telegram()
     if not isinstance(raw, dict):
         raise ConfigError("`telegram:` must be a mapping")
     return TelegramConfig(
@@ -598,11 +608,13 @@ def load(path: str | os.PathLike) -> SwarmConfig:
     # addressed by an agent; everything else must name a real agent.
     for agent in agents:
         if "*" in agent.can_talk_to:
-            # `*` means "every other agent". Preserve any other entries listed
-            # alongside it (notably `user`, which `*` does not cover) instead of
-            # replacing the whole list -- dropping an explicit recipient would
-            # deny mail the config plainly granted.
-            expanded = [n for n in all_names if n != agent.name]
+            # `*` means "every other agent, plus the `user`". Including the
+            # reserved `user` mailbox is deliberate: a wildcard agent (typically
+            # an orchestrator) must always be able to report back to the human --
+            # a `*` that silently couldn't reach the user was a footgun. `system`
+            # stays orchestrator-only and is never included. Any other entries
+            # listed alongside `*` are preserved (deduped below).
+            expanded = [n for n in all_names if n != agent.name] + ["user"]
             extras = [
                 p
                 for p in agent.can_talk_to

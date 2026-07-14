@@ -17,6 +17,7 @@ from unittest import mock
 import pytest
 
 import log
+import mcp
 import ui
 from support import load_swarm, mock_tmux
 
@@ -1372,3 +1373,406 @@ def test_api_rate_skips_old_and_malformed(cfg):
     with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
         data = json.loads(_get(h, "/api/rate?window=5", token="sekret")[1])
     assert data["total"] == 0
+
+
+# --------------------------------------------------------------------------
+# multi-swarm control plane: /api/swarms* + /api/settings + ?swarm= routing
+# --------------------------------------------------------------------------
+
+import registry  # noqa: E402
+
+
+def _qpost(h, path, token, body):
+    """POST that tolerates a path already carrying a query string (?swarm=...)."""
+    sep = "&" if "?" in path else "?"
+    url = f"http://127.0.0.1:{h.port}{path}{sep}token={token}"
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return resp.status, resp.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()
+
+
+def _rb_server():
+    """A registry-backed server over whatever swarms are currently registered."""
+    return ui.run_server(
+        swarms=registry.load_all(), token="sekret", host="127.0.0.1", port=0
+    )
+
+
+def test_swarm_selector_resolves_and_404(cfg):
+    # `cfg` (swarm "demo") is pinned as a single explicit config -> back-compat.
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        # explicit ?swarm=demo resolves to the pinned swarm
+        code, body = _get(h, "/api/status?swarm=demo", token="sekret")
+        assert code == 200 and json.loads(body)["name"] == "demo"
+        # default (no ?swarm=) also resolves
+        assert _get(h, "/api/status", token="sekret")[0] == 200
+        # unknown swarm -> 404 with the message (GET path)
+        code, body = _get(h, "/api/status?swarm=nope", token="sekret")
+        assert code == 404
+        assert "unknown swarm" in json.loads(body)["error"]
+        # unknown swarm on a POST path -> 404 too (self.cfg access propagates
+        # _SwarmNotFound up to do_POST's central handler)
+        code, body = _qpost(h, "/api/up?swarm=nope", "sekret", {"agent": "alice"})
+        assert code == 404
+        assert "unknown swarm" in json.loads(body)["error"]
+
+
+def test_api_swarms_dashboard(tmp_path):
+    registry.create_swarm("alpha")
+    registry.create_swarm("beta")
+    with mock_tmux(), _rb_server() as h:
+        data = json.loads(_get(h, "/api/swarms", token="sekret")[1])
+        names = [s["name"] for s in data["swarms"]]
+        assert names == ["alpha", "beta"]  # sorted
+        assert data["default"] in ("alpha", "beta")
+        row = data["swarms"][0]
+        assert set(row) == {
+            "name", "path", "root", "total", "running", "attention", "supervisor_alive"
+        }
+        assert row["total"] == 0 and row["running"] == 0
+
+
+def test_api_swarms_summary_supervisor_absent(tmp_path):
+    registry.create_swarm("alpha")
+    with mock_tmux(), mock.patch.dict(sys.modules, {"supervisor": None}):
+        with _rb_server() as h:
+            data = json.loads(_get(h, "/api/swarms", token="sekret")[1])
+    assert data["swarms"][0]["supervisor_alive"] is None
+
+
+def test_api_swarms_create_success_and_errors(tmp_path):
+    registry.create_swarm("alpha")
+    with mock_tmux(), _rb_server() as h:
+        code, body = _qpost(h, "/api/swarms/create", "sekret", {"name": "created"})
+        assert code == 200
+        j = json.loads(body)
+        assert j["ok"] is True and j["name"] == "created"
+        assert registry.entry("created") is not None
+        # the live set picked it up (refresh)
+        names = [s["name"] for s in json.loads(_get(h, "/api/swarms", token="sekret")[1])["swarms"]]
+        assert "created" in names
+        # duplicate -> 400
+        assert _qpost(h, "/api/swarms/create", "sekret", {"name": "created"})[0] == 400
+        # missing name -> 400
+        assert _qpost(h, "/api/swarms/create", "sekret", {})[0] == 400
+        # invalid json -> 400
+        assert _post_raw(h, "/api/swarms/create", "sekret", b"nope") == 400
+
+
+def test_api_swarms_create_with_template_and_raw(tmp_path):
+    with mock_tmux(), _rb_server() as h:
+        code, _ = _qpost(h, "/api/swarms/create", "sekret",
+                         {"name": "res3", "template": "research"})
+        assert code == 200
+        assert registry.resolve("res3").agents
+        # raw dict path
+        code, _ = _qpost(h, "/api/swarms/create", "sekret", {
+            "name": "rawui",
+            "raw": {"defaults": {"type": "claude"},
+                    "agents": [{"name": "solo", "command": "true", "can_talk_to": []}]},
+        })
+        assert code == 200
+        assert registry.resolve("rawui").names() == ["solo"]
+
+
+def test_api_swarms_up_success_unknown_and_error(tmp_path, monkeypatch):
+    registry.create_swarm("emptyup")  # zero agents -> nothing spawns
+    with mock_tmux(), _rb_server() as h:
+        code, body = _qpost(h, "/api/swarms/up", "sekret", {"name": "emptyup"})
+        assert code == 200
+        assert json.loads(body)["started"] == []
+        # unknown swarm -> 404
+        assert _qpost(h, "/api/swarms/up", "sekret", {"name": "ghost"})[0] == 404
+        # up_config raising -> 400
+        import cli
+        with mock.patch.object(cli, "up_config", side_effect=RuntimeError("boom")):
+            code, body = _qpost(h, "/api/swarms/up", "sekret", {"name": "emptyup"})
+        assert code == 400 and "boom" in json.loads(body)["error"]
+        # invalid json -> 400
+        assert _post_raw(h, "/api/swarms/up", "sekret", b"nope") == 400
+
+
+def test_api_swarms_down_success_and_unknown(tmp_path):
+    registry.create_swarm("downit")
+    with mock_tmux(), _rb_server() as h:
+        code, body = _qpost(h, "/api/swarms/down", "sekret", {"name": "downit"})
+        assert code == 200 and json.loads(body)["ok"] is True
+        assert _qpost(h, "/api/swarms/down", "sekret", {"name": "ghost"})[0] == 404
+        assert _post_raw(h, "/api/swarms/down", "sekret", b"nope") == 400
+
+
+def test_api_swarms_down_supervisor_absent(tmp_path):
+    registry.create_swarm("downit2")
+    with mock_tmux(), mock.patch.dict(sys.modules, {"supervisor": None}):
+        with _rb_server() as h:
+            code, _ = _qpost(h, "/api/swarms/down", "sekret", {"name": "downit2"})
+    assert code == 200
+
+
+def test_api_swarms_register_success_and_errors(tmp_path):
+    # a standalone valid config to register
+    standalone = load_swarm(tmp_path, AGENTS, name="standalone")
+    with mock_tmux(), _rb_server() as h:
+        code, body = _qpost(h, "/api/swarms/register", "sekret", {"path": str(standalone.path)})
+        assert code == 200
+        assert json.loads(body)["name"] == "standalone"
+        assert registry.entry("standalone") is not None
+        # invalid path -> 400
+        assert _qpost(h, "/api/swarms/register", "sekret", {"path": "/nope.yaml"})[0] == 400
+        # missing path -> 400
+        assert _qpost(h, "/api/swarms/register", "sekret", {})[0] == 400
+        assert _post_raw(h, "/api/swarms/register", "sekret", b"nope") == 400
+
+
+def test_api_swarms_remove(tmp_path):
+    registry.create_swarm("removeme")
+    with mock_tmux(), _rb_server() as h:
+        code, body = _qpost(h, "/api/swarms/remove", "sekret", {"name": "removeme"})
+        assert code == 200 and json.loads(body)["removed"] is True
+        assert registry.entry("removeme") is None
+        # not registered -> removed False (still 200)
+        code, body = _qpost(h, "/api/swarms/remove", "sekret", {"name": "ghost"})
+        assert code == 200 and json.loads(body)["removed"] is False
+        # missing name -> 400
+        assert _qpost(h, "/api/swarms/remove", "sekret", {})[0] == 400
+        assert _post_raw(h, "/api/swarms/remove", "sekret", b"nope") == 400
+
+
+def test_api_settings_get_and_post(tmp_path):
+    registry.create_swarm("alpha")
+    with mock_tmux(), _rb_server() as h:
+        # GET default (nothing configured)
+        data = json.loads(_get(h, "/api/settings", token="sekret")[1])
+        assert data["telegram_configured"] is False
+        assert data["telegram_enabled"] is False
+        assert data["active_swarm"] is None
+        assert "bot_token" not in data["telegram"]
+        assert data["telegram"]["has_token"] is False
+        # POST a telegram dict + active_swarm
+        code, body = _qpost(h, "/api/settings", "sekret", {
+            "telegram": {"enabled": True, "bot_token": "1:x", "chat_id": "abc"},
+            "active_swarm": "alpha",
+        })
+        assert code == 200
+        j = json.loads(body)
+        assert j["ok"] is True
+        assert j["telegram_configured"] is True
+        assert j["telegram_enabled"] is True
+        assert j["telegram"]["has_token"] is True
+        assert "bot_token" not in j["telegram"]
+        assert j["active_swarm"] == "alpha"
+        # it persisted to the global store
+        assert registry.active_swarm() == "alpha"
+        assert registry.global_telegram()["bot_token"] == "1:x"
+        # invalid json -> 400
+        assert _post_raw(h, "/api/settings", "sekret", b"nope") == 400
+
+
+def test_api_settings_post_empty_body_ok(tmp_path):
+    registry.create_swarm("alpha")
+    with mock_tmux(), _rb_server() as h:
+        # neither telegram nor active_swarm -> still 200, no-op
+        code, body = _qpost(h, "/api/settings", "sekret", {})
+        assert code == 200 and json.loads(body)["ok"] is True
+
+
+def test_set_cfg_rename_on_registry_backed(tmp_path):
+    registry.create_swarm("alpha")
+    with mock_tmux(), _rb_server() as h:
+        # rename the default swarm via POST /api/config
+        code, _ = _qpost(h, "/api/config?swarm=alpha", "sekret", {"swarm": {"name": "renamed"}})
+        assert code == 200
+        # the renamed swarm now resolves; the old name is gone from the live set
+        assert _get(h, "/api/status?swarm=renamed", token="sekret")[0] == 200
+        assert _get(h, "/api/status?swarm=alpha", token="sekret")[0] == 404
+
+
+def test_run_server_registry_backed_flag(tmp_path):
+    registry.create_swarm("alpha")
+    with mock_tmux(), _rb_server() as h:
+        assert ui.UIHandler.registry_backed is True
+        assert ui.UIHandler.default_swarm == "alpha"
+
+
+# --------------------------------------------------------------------------
+# Phase B: create-swarm flows (examples, builder session, approve, raw YAML)
+# --------------------------------------------------------------------------
+
+
+def test_api_examples_lists_raw(tmp_path):
+    registry.create_swarm("alpha")
+    with mock_tmux(), _rb_server() as h:
+        data = json.loads(_get(h, "/api/examples", token="sekret")[1])
+    ex = {e["name"]: e for e in data["examples"]}
+    assert "research" in ex
+    assert "swarm:" in ex["research"]["raw"]  # full YAML text is returned
+    assert ex["research"]["agents"] >= 1
+    assert ex["research"]["title"]
+
+
+def test_api_swarms_build(monkeypatch, tmp_path):
+    registry.create_swarm("alpha")
+    monkeypatch.setattr(ui.scaffold, "open_builder_session",
+                        lambda cfg, **k: "alpha_builder")
+    with mock_tmux(), _rb_server() as h:
+        code, body = _qpost(h, "/api/swarms/build", "sekret",
+                            {"name": "alpha", "agent_type": "claude", "mode": "adapt"})
+        assert code == 200 and json.loads(body)["session"] == "alpha_builder"
+        # unknown swarm -> 404
+        assert _qpost(h, "/api/swarms/build", "sekret", {"name": "nope"})[0] == 404
+
+        def _boom(cfg, **k):
+            raise ValueError("bad agent type")
+        monkeypatch.setattr(ui.scaffold, "open_builder_session", _boom)
+        assert _qpost(h, "/api/swarms/build", "sekret", {"name": "alpha"})[0] == 400
+
+
+def test_api_swarms_approve(monkeypatch, tmp_path):
+    registry.create_swarm("alpha")
+    with mock_tmux(), _rb_server() as h:
+        assert _qpost(h, "/api/swarms/approve", "sekret", {})[0] == 400  # missing name
+        monkeypatch.setattr(ui.scaffold, "approve_swarm",
+                            lambda name, **k: {"ok": True, "started": ["x"]})
+        code, body = _qpost(h, "/api/swarms/approve", "sekret", {"name": "alpha"})
+        assert code == 200 and json.loads(body)["ok"] is True
+        monkeypatch.setattr(ui.scaffold, "approve_swarm",
+                            lambda name, **k: {"ok": False, "error": "bad config"})
+        assert _qpost(h, "/api/swarms/approve", "sekret", {"name": "alpha"})[0] == 400
+
+
+def test_api_swarms_create_raw_yaml(tmp_path):
+    with mock_tmux(), _rb_server() as h:
+        good = ("defaults: {type: claude}\n"
+                "agents:\n  - name: solo\n    role: hi\n    can_talk_to: [user]\n")
+        code, body = _qpost(h, "/api/swarms/create", "sekret",
+                            {"name": "fromraw", "raw_yaml": good})
+        assert code == 200, body
+        assert registry.entry("fromraw") is not None
+        # a scalar (not a mapping) fails YAML validation -> 400
+        assert _qpost(h, "/api/swarms/create", "sekret",
+                      {"name": "fromraw2", "raw_yaml": "just a string"})[0] == 400
+
+
+def test_builder_pane_type_key(tmp_path):
+    registry.create_swarm("alpha")
+    with mock_tmux(), _rb_server() as h:
+        assert _get(h, "/api/pane?swarm=alpha&agent=builder", token="sekret")[0] == 200
+        assert _qpost(h, "/api/type?swarm=alpha", "sekret",
+                      {"agent": "builder", "text": "hello"})[0] == 200
+        assert _qpost(h, "/api/key?swarm=alpha", "sekret",
+                      {"agent": "builder", "key": "Enter"})[0] == 200
+
+
+def test_api_swarms_build_bad_json(tmp_path):
+    registry.create_swarm("alpha")
+    with mock_tmux(), _rb_server() as h:
+        assert _post_raw(h, "/api/swarms/build", "sekret", b"not json") == 400
+
+
+def test_api_swarms_approve_bad_json(tmp_path):
+    registry.create_swarm("alpha")
+    with mock_tmux(), _rb_server() as h:
+        assert _post_raw(h, "/api/swarms/approve", "sekret", b"not json") == 400
+
+
+def test_api_examples_skips_unparseable(cfg, tmp_path):
+    # A directory named *.yaml makes load_raw raise -> the entry is skipped.
+    tdir = _tmpl_dir(tmp_path)
+    with mock_tmux(), mock.patch.object(ui.UIHandler, "_templates_dir", lambda self: tdir):
+        with ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+            data = json.loads(_get(h, "/api/examples", token="sekret")[1])
+    names = {e["name"] for e in data["examples"]}
+    assert "demo" in names and "broken" not in names
+
+
+# --------------------------------------------------------------------------
+# MCP transport (POST /mcp) -- the coding-agent control surface
+# --------------------------------------------------------------------------
+
+
+def _mcp_post(h, token, body):
+    """POST a JSON-RPC message to /mcp; return (status, decoded-body)."""
+    url = f"http://127.0.0.1:{h.port}/mcp?token={token}"
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        url, data=data, method="POST", headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return resp.status, resp.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()
+
+
+def test_mcp_tools_list(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        status, body = _mcp_post(h, "sekret",
+                                 {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    assert status == 200
+    tools = json.loads(body)["result"]["tools"]
+    assert any(t["name"] == "list_swarms" for t in tools)
+
+
+def test_mcp_tools_call_uses_pinned_swarm(cfg):
+    with mock_tmux(has_session=False), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        status, body = _mcp_post(h, "sekret", {
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "list_swarms"}})
+    payload = json.loads(json.loads(body)["result"]["content"][0]["text"])
+    assert [s["name"] for s in payload["swarms"]] == ["demo"]
+
+
+def test_mcp_notification_returns_202(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        status, body = _mcp_post(h, "sekret",
+                                 {"jsonrpc": "2.0", "method": "notifications/initialized"})
+    assert status == 202
+    assert body == ""
+
+
+def test_mcp_parse_error(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        url = f"http://127.0.0.1:{h.port}/mcp?token=sekret"
+        req = urllib.request.Request(url, data=b"{not json", method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req) as resp:
+                status, body = resp.status, resp.read().decode()
+        except urllib.error.HTTPError as e:
+            status, body = e.code, e.read().decode()
+    assert status == 400
+    assert json.loads(body)["error"]["code"] == mcp.PARSE_ERROR
+
+
+def test_mcp_requires_token(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        url = f"http://127.0.0.1:{h.port}/mcp"
+        req = urllib.request.Request(url, data=b"{}", method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req) as resp:
+                status = resp.status
+        except urllib.error.HTTPError as e:
+            status = e.code
+    assert status == 401
+
+
+def test_mcp_get_not_allowed(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        assert _get(h, "/mcp", token="sekret")[0] == 405
+
+
+def test_mcp_registry_backed(tmp_path):
+    registry.create_swarm("alpha")
+    with mock_tmux(has_session=False), _rb_server() as h:
+        status, body = _mcp_post(h, "sekret", {
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "list_swarms"}})
+    payload = json.loads(json.loads(body)["result"]["content"][0]["text"])
+    assert any(s["name"] == "alpha" for s in payload["swarms"])

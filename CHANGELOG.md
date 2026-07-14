@@ -5,9 +5,51 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 🚧 [Unreleased]
+## 🎉 [2.1.0] — 2026-07-14
 
 ### ✨ Added
+- **MCP server — manage Agentainer from a coding agent.** A new **fourth control
+  plane** (CLI / UI / Telegram / **MCP**): a coding agent can monitor and manage
+  every swarm over the Model Context Protocol (new module
+  [`lib/mcp.py`](lib/mcp.py), a thin JSON-RPC 2.0 adapter over the same tested
+  `lib/` core). Two transports, one tool set — `agentainer mcp` (stdio; no
+  running `serve` needed, operates over the global registry) and `POST /mcp` on
+  the `serve` control plane (reuses the Bearer token; POST-only). Tools cover
+  monitoring (`list_swarms`, `swarm_status`, `read_inbox`, `read_queue`,
+  `read_user_inbox`, `agent_logs`, `capture_pane`, `read_config`) and management
+  (`send_message`, `set_availability`, `start_agent`/`stop_agent`,
+  `up_swarm`/`down_swarm`, `create_swarm`, `add_agent`/`remove_agent`). Tool
+  problems return `isError` results so the model self-corrects, like `system`
+  mail. Zero new dependencies. Docs: [`docs/mcp.md`](docs/mcp.md); this is a
+  permanent, maintained surface (CLAUDE.md principle #7).
+- **Multi-swarm control plane — one `serve` runs every swarm.** A single
+  `agentainer serve` now manages **every swarm on the machine** instead of one
+  config at a time. A new global registry + shared settings live under
+  `~/.agentainer/` (override with `$AGENTAINER_STATE_DIR`), kept separate from
+  each swarm's per-`root` `.agentainer/` runtime. Any swarm you `up` (from any
+  directory) auto-registers and appears in the dashboard. New module
+  [`lib/registry.py`](lib/registry.py); every UI route is swarm-scoped via
+  `?swarm=<name>`; `serve -c one.yaml` still works (single-swarm back-compat).
+- **`swarms` command group** (CLI ⇄ UI ⇄ Telegram parity): `list`, `create`
+  `[--template <example>]`, `register <path>`, `remove`, `up`, `down`, `build`,
+  `approve`, `use`.
+- **Guided swarm creation.** Create a swarm from a **bundled example** (preview +
+  edit the YAML inline), or have a **coding-agent build it for you**: pick a CLI
+  and Agentainer opens an **interactive tmux session** you talk to in the browser
+  (new [`lib/scaffold.py`](lib/scaffold.py)); it writes `agentainer.yaml`, then
+  **Approve & Launch**. New endpoints: `GET /api/examples`, `POST
+  /api/swarms/{create,up,down,register,remove,build,approve}`.
+- **Shared Telegram across all swarms.** Configure **one** bot once (Settings →
+  Telegram, stored globally in `~/.agentainer/`) and every swarm shares it; a
+  per-swarm `telegram:` block still overrides it. A single control-plane inbound
+  poller drives any swarm from your phone, with `/swarms` (list) and `/use
+  <name>` (switch the active swarm). A first-login nudge appears when Telegram is
+  off.
+- **Redesigned, beginner-friendly UI** (full front-end rewrite, still
+  zero-dependency): swarm switcher + dashboard, the create flow above, and
+  sensible defaults with the rarely-touched knobs collapsed under "Configure
+  Advanced Settings" — it runs out of the box.
+
 - **Cron-scheduled pings (`pings:`).** An agent (or `defaults:`) can now carry a
   list of scheduled pings, each with its own `message` and a standard 5-field
   `cron` expression (`minute hour day-of-month month day-of-week`), so an agent
@@ -33,6 +75,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ship Fri, plus a monthly recap on the 1st, showcasing day-of-week and
   day-of-month cron). See [`docs/use-cases/ops-watchtower.md`](docs/use-cases/ops-watchtower.md)
   and [`docs/use-cases/content-cadence.md`](docs/use-cases/content-cadence.md).
+
+### 🔧 Changed
+- **`can_talk_to: "*"` now includes the `user`.** The wildcard previously
+  expanded to every *other agent* but **not** the reserved `user` mailbox, so a
+  `"*"` orchestrator could delegate to peers yet got an ACL bounce trying to
+  report back to the human — a footgun. `"*"` now also grants `user` (still never
+  `system`). List recipients explicitly if you deliberately want an agent that
+  cannot reach the human.
 
 ### 🗑️ Removed
 - **Legacy per-agent ping fields `periodically_ping_seconds` /
@@ -89,6 +139,7 @@ plus the bundled use-case docs and example swarms.
   other agent *and* preserves explicitly listed extras (notably `user`), which
   `*` does not cover, instead of replacing the whole list.
 
+[2.1.0]: https://github.com/mehmetcanfarsak/Agentainer/releases/tag/v2.1.0
 [2.0.1]: https://github.com/mehmetcanfarsak/Agentainer/releases/tag/v2.0.1
 
 ## 🎉 [2.0.0] — 2026-07-11

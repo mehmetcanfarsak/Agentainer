@@ -33,6 +33,7 @@ The set of endpoints:
   GET /api/config             -> raw swarm settings + agents (for the editor)
   GET /api/availability       -> the user's receive-mail availability toggle
   GET /api/templates          -> bundled example swarms (onboarding, empty swarm)
+  GET /api/examples           -> bundled example swarms + full raw YAML (edit-before-create)
   GET /api/rate?window=       -> opt-in per-agent messages/min over last `window` min
   POST /api/send              -> body {"to","text"} -> mail.send_as_user
   POST /api/type              -> body {"agent","text"} -> tmux.paste_into (direct pane input)
@@ -47,6 +48,8 @@ The set of endpoints:
   POST /api/agent/edit        -> body {"name","fields": {...}} -> edit + persist
   POST /api/agent/remove      -> body {"name"} -> stop session + remove + persist
   POST /api/templates/apply   -> body {"name"} -> seed an empty swarm from a template
+  POST /api/swarms/build      -> body {"name","agent_type"?,"command"?,"mode"?,"notes"?} -> open builder session
+  POST /api/swarms/approve    -> body {"name"} -> validate the built config + up the swarm
 
 Every mutation rewrites ``agentainer.yaml`` (via lib/reconcile's stdlib emitter,
 so the no-PyYAML path stays live) and swaps ``UIHandler.cfg`` for the reloaded
@@ -65,6 +68,7 @@ import json
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -79,7 +83,10 @@ if str(_LIB) not in sys.path:
 
 import config  # noqa: E402
 import mail  # noqa: E402
+import mcp  # noqa: E402
 import reconcile  # noqa: E402
+import registry  # noqa: E402
+import scaffold  # noqa: E402
 import telegram  # noqa: E402
 import tmux  # noqa: E402
 import turn  # noqa: E402
@@ -114,6 +121,28 @@ _tg_lock = threading.Lock()
 def _is_loopback(host: str) -> bool:
     """True iff *host* resolves to the local machine only (safe without a token)."""
     return host in _LOOPBACK_HOSTS
+
+
+def _parse_raw_yaml(text: str) -> dict:
+    """Parse an operator-edited YAML string into a config dict.
+
+    Routed through ``reconcile.load_raw`` (a temp file) so the same PyYAML-or-
+    minyaml reader as everywhere else is used -- keeping the no-PyYAML path live.
+    Raises ``ValueError`` when the text does not parse to a mapping.
+    """
+    import os
+    import tempfile
+
+    fd, tmp = tempfile.mkstemp(suffix=".yaml")
+    try:
+        os.write(fd, text.encode())
+        os.close(fd)
+        data = reconcile.load_raw(tmp)
+    finally:
+        os.unlink(tmp)
+    if not isinstance(data, dict):
+        raise ValueError("YAML did not parse to a mapping")
+    return data
 
 
 class ServerHandle:
@@ -151,18 +180,81 @@ class ServerHandle:
         self.shutdown()
 
 
+class _SwarmNotFound(Exception):
+    """A request named a ``?swarm=`` that isn't in the live control-plane set."""
+
+
 class UIHandler(BaseHTTPRequestHandler):
     """Thin request handler over the core modules.
 
-    ``cfg``, ``token`` and ``ui_dir`` are set as class attributes on
-    ``UIHandler`` by ``run_server`` before the server starts accepting traffic.
+    One ``serve`` process is a **multi-swarm** control plane: ``swarms`` maps
+    ``name -> SwarmConfig`` for every swarm this server manages, and each
+    per-swarm request selects one via ``?swarm=<name>`` (falling back to
+    ``default_swarm`` when omitted -- which keeps the single-swarm
+    ``serve -c one.yaml`` behaviour). ``token`` and ``ui_dir`` are server-wide.
+    ``run_server`` sets these class attributes before traffic starts.
+
+    ``registry_backed`` is True when the live set is synced from the global
+    ``lib/registry`` store (the whole-machine ``serve``); False for a server
+    pinned to a single explicit config (back-compat / tests).
     """
 
-    cfg = None
+    swarms: dict = {}
+    default_swarm = None
+    registry_backed = False
     token = None
     ui_dir = None
     # Keep the test output quiet; the orchestrator has its own logs.
     protocol_version = "HTTP/1.0"
+
+    # -- swarm resolution (multi-swarm selector layer) ------------------------
+
+    def _query_get(self, key: str):
+        vals = parse_qs(urlparse(self.path).query).get(key)
+        return vals[0] if vals else None
+
+    def _swarm_key(self):
+        """The swarm name this request targets: ``?swarm=`` or the default."""
+        name = self._query_get("swarm")
+        return type(self).default_swarm if name is None else name
+
+    @property
+    def cfg(self):
+        """The ``SwarmConfig`` this request targets (raises ``_SwarmNotFound``).
+
+        Every per-swarm handler reads ``self.cfg``; the selector is invisible to
+        them. A 404 is produced centrally in ``do_GET``/``do_POST`` when the name
+        is unknown.
+        """
+        key = self._swarm_key()
+        swarms = type(self).swarms
+        if key is not None and key in swarms:
+            return swarms[key]
+        raise _SwarmNotFound(key)
+
+    def _set_cfg(self, new_cfg) -> None:
+        """Write a mutated config back into the live set (handles a renamed swarm)."""
+        cls = type(self)
+        key = self._swarm_key()
+        if key is not None:
+            cls.swarms.pop(key, None)
+        cls.swarms[new_cfg.name] = new_cfg
+        if cls.default_swarm == key:
+            cls.default_swarm = new_cfg.name
+
+    def _refresh_swarms(self) -> dict:
+        """Re-sync the live set from the global registry (when registry-backed).
+
+        Config mutations commit to disk via ``reconcile``, so re-reading the
+        registry keeps the dashboard authoritative and picks up swarms created or
+        removed since the server started. A no-op for a single-config server.
+        """
+        cls = type(self)
+        if cls.registry_backed:
+            cls.swarms = registry.load_all()
+            if cls.default_swarm not in cls.swarms:
+                cls.default_swarm = next(iter(cls.swarms), None)
+        return cls.swarms
 
     # -- low-level responders -------------------------------------------------
 
@@ -213,11 +305,26 @@ class UIHandler(BaseHTTPRequestHandler):
         if self._auth_required() and not self._token_valid():
             self._send_json(401, {"error": "unauthorized"})
             return
+        try:
+            self._dispatch_get()
+        except _SwarmNotFound as exc:
+            self._send_json(404, {"error": f"unknown swarm: {exc.args[0]!r}"})
+
+    def _dispatch_get(self) -> None:
         path = urlparse(self.path).path
         if path in ("/", "/index.html"):
             self._serve_static("index.html", "text/html; charset=utf-8")
         elif path == "/app.js":
             self._serve_static("app.js", "text/javascript; charset=utf-8")
+        elif path == "/mcp":
+            # Streamable-HTTP MCP is POST-only here (no server->client stream).
+            self.send_response(405)
+            self.send_header("Allow", "POST")
+            self.end_headers()
+        elif path == "/api/swarms":
+            self._api_swarms()
+        elif path == "/api/settings":
+            self._api_settings()
         elif path == "/api/status":
             self._api_status()
         elif path == "/api/agents":
@@ -244,6 +351,8 @@ class UIHandler(BaseHTTPRequestHandler):
             self._api_telegram()
         elif path == "/api/templates":
             self._api_templates()
+        elif path == "/api/examples":
+            self._api_examples()
         elif path == "/api/rate":
             self._api_rate()
         else:
@@ -255,8 +364,32 @@ class UIHandler(BaseHTTPRequestHandler):
         if not self._token_valid():
             self._send_json(401, {"error": "unauthorized"})
             return
+        try:
+            self._dispatch_post(raw)
+        except _SwarmNotFound as exc:
+            self._send_json(404, {"error": f"unknown swarm: {exc.args[0]!r}"})
+
+    def _dispatch_post(self, raw: bytes) -> None:
         path = urlparse(self.path).path
-        if path == "/api/send":
+        if path == "/mcp":
+            self._api_mcp(raw)
+        elif path == "/api/swarms/create":
+            self._api_swarms_create(raw)
+        elif path == "/api/swarms/up":
+            self._api_swarms_up(raw)
+        elif path == "/api/swarms/down":
+            self._api_swarms_down(raw)
+        elif path == "/api/swarms/register":
+            self._api_swarms_register(raw)
+        elif path == "/api/swarms/remove":
+            self._api_swarms_remove(raw)
+        elif path == "/api/swarms/build":
+            self._api_swarms_build(raw)
+        elif path == "/api/swarms/approve":
+            self._api_swarms_approve(raw)
+        elif path == "/api/settings":
+            self._api_settings_post(raw)
+        elif path == "/api/send":
             self._api_send(raw)
         elif path == "/api/type":
             self._api_type(raw)
@@ -302,13 +435,215 @@ class UIHandler(BaseHTTPRequestHandler):
 
     # -- API: status ----------------------------------------------------------
 
-    def _supervisor_alive(self):
-        """Lazily import supervisor so an absent module degrades to None."""
+    def _supervisor_module(self):
+        """Import supervisor lazily; None if absent (a partially wired checkout)."""
         try:
-            import supervisor as _supervisor  # noqa: F401
+            import supervisor as _supervisor
         except Exception:
             return None
-        return _supervisor.supervisor_alive(self.cfg)
+        return _supervisor
+
+    def _supervisor_alive(self, cfg=None):
+        """Lazily import supervisor so an absent module degrades to None."""
+        sup = self._supervisor_module()
+        if sup is None:
+            return None
+        return sup.supervisor_alive(cfg if cfg is not None else self.cfg)
+
+    def _swarm_summary(self, cfg) -> dict:
+        """One dashboard row for *cfg* (running/total agents + attention)."""
+        running = sum(1 for a in cfg.agents if tmux.session_exists(a.session))
+        udir = cfg.queue_dir / "user"
+        attention = (
+            len([f for f in udir.iterdir() if f.is_file()]) if udir.exists() else 0
+        )
+        return {
+            "name": cfg.name,
+            "path": str(cfg.path),
+            "root": str(cfg.root),
+            "total": len(cfg.agents),
+            "running": running,
+            "attention": attention,
+            "supervisor_alive": self._supervisor_alive(cfg),
+        }
+
+    # -- API: swarms (multi-swarm control plane) ------------------------------
+
+    def _api_swarms(self) -> None:
+        """Dashboard of every swarm this control plane manages."""
+        swarms = self._refresh_swarms()
+        out = sorted(
+            (self._swarm_summary(cfg) for cfg in swarms.values()),
+            key=lambda s: s["name"],
+        )
+        self._send_json(200, {"swarms": out, "default": type(self).default_swarm})
+
+    def _resolve_swarm(self, data):
+        """Look up the swarm named in a POST body; None (after 404) if unknown."""
+        name = data.get("name") or data.get("swarm")
+        swarms = self._refresh_swarms()
+        if not name or name not in swarms:
+            self._send_json(404, {"error": "unknown swarm"})
+            return None, None
+        return name, swarms[name]
+
+    def _api_swarms_create(self, raw: bytes) -> None:
+        data = self._json_body(raw)
+        if data is None:
+            return
+        name = (data.get("name") or "").strip()
+        if not name:
+            self._send_json(400, {"error": "missing name"})
+            return
+        tpl = data.get("template") or None
+        raw_cfg = data.get("raw") if isinstance(data.get("raw"), dict) else None
+        # The UI may hand back a YAML *string* the operator edited inline; parse it
+        # (via reconcile's stdlib-or-PyYAML reader) into a dict and treat it as raw.
+        raw_yaml = data.get("raw_yaml")
+        if raw_cfg is None and isinstance(raw_yaml, str) and raw_yaml.strip():
+            try:
+                raw_cfg = _parse_raw_yaml(raw_yaml)
+            except Exception as exc:
+                self._send_json(400, {"error": f"invalid YAML: {exc}"})
+                return
+        try:
+            path = registry.create_swarm(
+                name, root=data.get("root") or None, template=tpl, raw=raw_cfg
+            )
+        except Exception as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._refresh_swarms()
+        self._send_json(200, {"ok": True, "name": name, "path": str(path)})
+
+    def _api_swarms_up(self, raw: bytes) -> None:
+        data = self._json_body(raw)
+        if data is None:
+            return
+        name, cfg = self._resolve_swarm(data)
+        if cfg is None:
+            return
+        try:
+            import cli  # lazy: cli imports ui, so import it only at call time
+            started = cli.up_config(cfg)
+        except Exception as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._refresh_swarms()
+        self._send_json(200, {"ok": True, "name": name, "started": [a.name for a in started]})
+
+    def _api_swarms_down(self, raw: bytes) -> None:
+        data = self._json_body(raw)
+        if data is None:
+            return
+        name, cfg = self._resolve_swarm(data)
+        if cfg is None:
+            return
+        stopped = reconcile.stop_all(cfg)
+        sup = self._supervisor_module()
+        if sup is not None:
+            sup.stop_supervisor(cfg)
+        self._send_json(200, {"ok": True, "name": name, "stopped": stopped})
+
+    def _api_swarms_register(self, raw: bytes) -> None:
+        data = self._json_body(raw)
+        if data is None:
+            return
+        path = data.get("path")
+        if not path:
+            self._send_json(400, {"error": "missing path"})
+            return
+        try:
+            cfg = config.load(path)  # validate before registering
+        except Exception as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        registry.register(cfg.name, cfg.path)
+        self._refresh_swarms()
+        self._send_json(200, {"ok": True, "name": cfg.name, "path": str(cfg.path)})
+
+    def _api_swarms_remove(self, raw: bytes) -> None:
+        """Forget a swarm (registry only; its config files are left on disk)."""
+        data = self._json_body(raw)
+        if data is None:
+            return
+        name = data.get("name") or data.get("swarm")
+        if not name:
+            self._send_json(400, {"error": "missing name"})
+            return
+        removed = registry.unregister(name)
+        self._refresh_swarms()
+        self._send_json(200, {"ok": True, "name": name, "removed": removed})
+
+    # -- API: interactive builder (create a swarm by talking to an agent) ------
+
+    def _api_swarms_build(self, raw: bytes) -> None:
+        """Open the interactive builder session for a swarm (returns its tmux id)."""
+        data = self._json_body(raw)
+        if data is None:
+            return
+        name, cfg = self._resolve_swarm(data)
+        if cfg is None:
+            return
+        atype = data.get("agent_type")
+        command = data.get("command")
+        # Let the operator pass a real alias directly; else fall back to the
+        # builtin default for the chosen type (resolved inside open_builder_session).
+        try:
+            session = scaffold.open_builder_session(
+                cfg,
+                agent_type=atype,
+                agent_command=command,
+                mode=data.get("mode") or "adapt",
+                notes=data.get("notes") or "",
+            )
+        except Exception as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(200, {"ok": True, "name": name, "session": session})
+
+    def _api_swarms_approve(self, raw: bytes) -> None:
+        """Validate a built swarm's config, close the builder, and ``up`` it."""
+        data = self._json_body(raw)
+        if data is None:
+            return
+        name = data.get("name") or data.get("swarm")
+        if not name:
+            self._send_json(400, {"error": "missing name"})
+            return
+        result = scaffold.approve_swarm(name)
+        self._refresh_swarms()
+        self._send_json(200 if result.get("ok") else 400, result)
+
+    # -- API: global settings (shared Telegram etc.) --------------------------
+
+    def _telegram_settings_view(self) -> dict:
+        """The shared Telegram settings, minus the secret bot token."""
+        tg = registry.global_telegram()
+        configured = bool(tg.get("bot_token") and tg.get("chat_id"))
+        view = {k: v for k, v in tg.items() if k != "bot_token"}
+        view["has_token"] = bool(tg.get("bot_token"))
+        return {
+            "telegram": view,
+            "telegram_configured": configured,
+            "telegram_enabled": bool(tg.get("enabled")) and configured,
+            "active_swarm": registry.active_swarm(),
+        }
+
+    def _api_settings(self) -> None:
+        self._send_json(200, self._telegram_settings_view())
+
+    def _api_settings_post(self, raw: bytes) -> None:
+        data = self._json_body(raw)
+        if data is None:
+            return
+        tg = data.get("telegram")
+        if isinstance(tg, dict):
+            registry.set_global_telegram(**tg)
+        active = data.get("active_swarm")
+        if active is not None:
+            registry.set_active_swarm(active)
+        self._send_json(200, dict(self._telegram_settings_view(), ok=True))
 
     def _pending_user_senders(self) -> set:
         """Names of agents whose mail to the ``user`` is still awaiting a reply.
@@ -484,6 +819,12 @@ class UIHandler(BaseHTTPRequestHandler):
         agent = qs.get("agent", [None])[0]
         if not agent:
             self._send_json(400, {"error": "missing agent"})
+            return
+        if agent == "builder":
+            # The interactive swarm builder runs in its own session, not a
+            # configured agent; capture_pane only reads ``.session``.
+            probe = SimpleNamespace(session=scaffold.builder_session_name(self.cfg))
+            self._send_json(200, {"agent": agent, "pane": tmux.capture_pane(self.cfg, probe)})
             return
         try:
             a = self.cfg.get(agent)
@@ -720,6 +1061,35 @@ class UIHandler(BaseHTTPRequestHandler):
             return
         self._send_json(200, {"ok": True, "to": to})
 
+    # -- MCP (Model Context Protocol) transport -------------------------------
+
+    def _mcp_swarms(self) -> dict:
+        """The swarm set exposed to MCP: the live registry (whole-machine serve)
+        or this server's single pinned config (``serve -c`` / tests)."""
+        if type(self).registry_backed:
+            return registry.load_all()
+        return dict(type(self).swarms)
+
+    def _api_mcp(self, raw: bytes) -> None:
+        """``POST /mcp`` -- one JSON-RPC message in, one response out.
+
+        Reuses the Bearer-token auth every other API call uses (checked in
+        ``do_POST`` before dispatch). A notification (no ``id``) yields ``202``
+        with an empty body, per the MCP streamable-HTTP transport.
+        """
+        try:
+            data = json.loads(raw.decode()) if raw else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send_json(400, {"jsonrpc": "2.0", "id": None,
+                                  "error": {"code": mcp.PARSE_ERROR, "message": "parse error"}})
+            return
+        response = mcp.dispatch(data, swarms=self._mcp_swarms())
+        if response is None:
+            self.send_response(202)
+            self.end_headers()
+            return
+        self._send_json(200, response)
+
     # -- POST helpers ---------------------------------------------------------
 
     def _json_body(self, raw: bytes):
@@ -741,13 +1111,16 @@ class UIHandler(BaseHTTPRequestHandler):
         if not to or not isinstance(text, str) or text == "":
             self._send_json(400, {"error": "missing agent/text"})
             return
+        if to == "builder":
+            session = scaffold.builder_session_name(self.cfg)
+        else:
+            try:
+                session = self.cfg.get(to).session
+            except Exception:
+                self._send_json(404, {"error": "unknown agent"})
+                return
         try:
-            a = self.cfg.get(to)
-        except Exception:
-            self._send_json(404, {"error": "unknown agent"})
-            return
-        try:
-            ok = tmux.paste_into(self.cfg, a.session, text)
+            ok = tmux.paste_into(self.cfg, session, text)
         except tmux.SwarmError as exc:
             self._send_json(400, {"error": str(exc)})
             return
@@ -762,13 +1135,16 @@ class UIHandler(BaseHTTPRequestHandler):
         if not to or not isinstance(key, str) or key == "":
             self._send_json(400, {"error": "missing agent/key"})
             return
+        if to == "builder":
+            session = scaffold.builder_session_name(self.cfg)
+        else:
+            try:
+                session = self.cfg.get(to).session
+            except Exception:
+                self._send_json(404, {"error": "unknown agent"})
+                return
         try:
-            a = self.cfg.get(to)
-        except Exception:
-            self._send_json(404, {"error": "unknown agent"})
-            return
-        try:
-            ok = tmux.send_key(self.cfg, a.session, key)
+            ok = tmux.send_key(self.cfg, session, key)
         except tmux.SwarmError as exc:
             self._send_json(400, {"error": str(exc)})
             return
@@ -873,6 +1249,32 @@ class UIHandler(BaseHTTPRequestHandler):
                 })
         self._send_json(200, {"templates": out})
 
+    def _api_examples(self) -> None:
+        """Like ``/api/templates`` but also returns each example's full YAML text.
+
+        Lets the UI preview and let the operator edit an example before creating a
+        swarm from it. ``/api/templates`` stays untouched for back-compat.
+        """
+        tdir = self._templates_dir()
+        out = []
+        if tdir.exists():
+            for p in sorted(tdir.glob("*.yaml")):
+                try:
+                    text = p.read_text()
+                    raw = reconcile.load_raw(p)
+                except Exception:
+                    continue
+                swarm = raw.get("swarm") or {}
+                title = swarm.get("name") or p.stem.replace("-", " ").replace("_", " ").title()
+                out.append({
+                    "name": p.stem,
+                    "title": title,
+                    "summary": self._template_summary(p),
+                    "agents": len(raw.get("agents") or []),
+                    "raw": text,
+                })
+        self._send_json(200, {"examples": out})
+
     def _api_templates_apply(self, raw: bytes) -> None:
         data = self._json_body(raw)
         if data is None:
@@ -900,7 +1302,7 @@ class UIHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json(400, {"error": str(exc)})
             return
-        UIHandler.cfg = new_cfg
+        self._set_cfg(new_cfg)
         mail.init_mailboxes(new_cfg)
         self._send_json(200, {"ok": True, "applied": name, "added": added})
 
@@ -960,7 +1362,7 @@ class UIHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json(400, {"error": str(exc)})
             return
-        UIHandler.cfg = new_cfg
+        self._set_cfg(new_cfg)
         self._send_json(200, {"ok": True, "swarm": reconcile.load_raw(new_cfg.path).get("swarm") or {}})
 
     # -- API: availability (toggle + persist) ---------------------------------
@@ -977,7 +1379,7 @@ class UIHandler(BaseHTTPRequestHandler):
         # produces an invalid config -- no error branch to guard.
         new_cfg = reconcile.edit_swarm(self.cfg, user_available=val)
         mail.set_user_available(new_cfg, val)
-        UIHandler.cfg = new_cfg
+        self._set_cfg(new_cfg)
         self._send_json(200, {"ok": True, "available": val})
 
     # -- API: agent add / edit / remove ---------------------------------------
@@ -1016,7 +1418,7 @@ class UIHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json(400, {"error": str(exc)})
             return
-        UIHandler.cfg = new_cfg
+        self._set_cfg(new_cfg)
         mail.init_mailboxes(new_cfg)
         self._send_json(200, {"ok": True, "name": name})
 
@@ -1039,7 +1441,7 @@ class UIHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json(400, {"error": str(exc)})
             return
-        UIHandler.cfg = new_cfg
+        self._set_cfg(new_cfg)
         mail.init_mailboxes(new_cfg)
         self._send_json(200, {"ok": True, "name": name})
 
@@ -1066,7 +1468,7 @@ class UIHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json(400, {"error": str(exc)})
             return
-        UIHandler.cfg = new_cfg
+        self._set_cfg(new_cfg)
         self._send_json(200, {"ok": True, "name": name})
 
     # -- API: telegram bridge -------------------------------------------------
@@ -1115,7 +1517,7 @@ class UIHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json(400, {"error": str(exc)})
             return
-        UIHandler.cfg = new_cfg
+        self._set_cfg(new_cfg)
         # Receive replies defaults ON: keep the poller matched to the new config.
         # Stop any running poller, then (re)start it whenever Telegram is enabled --
         # so enabling the bridge from the UI starts listening immediately (no
@@ -1169,12 +1571,13 @@ class UIHandler(BaseHTTPRequestHandler):
 
 
 def run_server(
-    cfg,
-    token: str,
+    cfg=None,
+    token: str = "",
     host: str = "127.0.0.1",
     port: int = 0,
     background: bool = True,
     ui_dir=None,
+    swarms=None,
 ):
     """Bind and serve the Agentainer UI control plane.
 
@@ -1202,19 +1605,34 @@ def run_server(
         raise ValueError("a token is required to bind to a non-loopback host")
 
     ui_path = Path(ui_dir) if ui_dir is not None else _DEFAULT_UI_DIR
-    UIHandler.cfg = cfg
+    if swarms is not None:
+        # Registry-backed: one control plane over every swarm on the machine.
+        UIHandler.swarms = dict(swarms)
+        UIHandler.registry_backed = True
+        UIHandler.default_swarm = next(iter(UIHandler.swarms), None)
+    else:
+        # A single explicit config: back-compat for ``serve -c one.yaml`` (and
+        # the whole UI test suite, which passes one ``cfg``).
+        UIHandler.swarms = {cfg.name: cfg} if cfg is not None else {}
+        UIHandler.registry_backed = False
+        UIHandler.default_swarm = cfg.name if cfg is not None else None
     UIHandler.token = token
     UIHandler.ui_dir = ui_path
 
-    # "Receive replies" is ON by default: if Telegram is fully configured, start
-    # the reply poller as soon as we serve, so phone replies + slash commands work
-    # without the operator having to flip a switch first. It's still stoppable any
-    # time from the UI's "Stop replies" toggle / POST /api/telegram/poll {run:false},
-    # and shutdown() stops it. A no-op when Telegram isn't enabled.
+    # "Receive replies" is ON by default: if Telegram is configured, start the
+    # inbound poller as soon as we serve, so phone replies + slash commands work
+    # without the operator having to flip a switch first. Stoppable any time from
+    # the UI, and shutdown() stops it. A no-op when Telegram isn't enabled.
+    #  * multi-swarm (registry-backed): ONE shared poller for the whole machine,
+    #    reading the current registry each loop so new swarms are picked up.
+    #  * single-config (serve -c / tests): the per-swarm poller, as before.
     global _tg_poller
     with _tg_lock:
-        if _tg_poller is None and telegram.is_enabled(cfg):
-            _tg_poller = telegram.start_poller(cfg)
+        if _tg_poller is None:
+            if swarms is not None:
+                _tg_poller = telegram.start_control_poller(lambda: registry.load_all())
+            elif cfg is not None and telegram.is_enabled(cfg):
+                _tg_poller = telegram.start_poller(cfg)
 
     server = ThreadingHTTPServer((host, port), UIHandler)
     real_port = server.server_address[1]

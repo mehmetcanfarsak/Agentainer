@@ -14,7 +14,7 @@ external runtime dependency; `node` is only needed for the npm bin wrapper.
   [`restart`](#restart) · [`status`](#status) · [`attach`](#attach) ·
   [`send`](#send) · [`user`](#user) · [`sessions`](#sessions) ·
   [`queue`](#queue) · [`idle`](#idle) · [`inbox`](#inbox) · [`logs`](#logs)
-- UI / control plane: [`serve`](#serve)
+- UI / control plane: [`serve`](#serve) · [`mcp`](#mcp)
 - Dynamic reconcile (P4): [`add`](#add) · [`remove`](#remove) ·
   [`edit`](#edit) · [`reconcile`](#reconcile)
 - Lifecycle / state: [`remove-session`](#remove-session)
@@ -380,6 +380,29 @@ agentainer serve -c my-swarm.yaml
 agentainer serve -c my-swarm.yaml --host 0.0.0.0 --port 8000 --token <UI_TOKEN>
 ```
 
+## `mcp`
+
+Run the **MCP (Model Context Protocol) server** on stdin/stdout so a *coding
+agent* can monitor and manage every swarm on the machine. This is the fourth
+control plane (CLI / UI / Telegram / MCP).
+
+```
+agentainer mcp
+```
+
+It speaks JSON-RPC 2.0 (`initialize` / `tools/list` / `tools/call` / `ping`) and
+operates directly over the global swarm [registry](multi-swarm.md) — **no running
+`serve` required**. Configure it in your agent's MCP settings, e.g. Claude Code's
+`.mcp.json`:
+
+```json
+{"mcpServers": {"agentainer": {"command": "agentainer", "args": ["mcp"]}}}
+```
+
+The same tool set is also exposed over HTTP at `POST /mcp` on a running `serve`
+control plane (reusing the Bearer token). Full tool catalog and transport details:
+[MCP — Manage from a Coding Agent](mcp.md).
+
 ---
 
 # Dynamic reconcile (P4)
@@ -546,3 +569,37 @@ agentainer supervise [-c <config>] [names ...]
 | Positional | Default | Meaning |
 | --- | --- | --- |
 | `names ...` | all agents | Agents to watch. |
+
+## `swarms`
+
+Manage **every swarm on the machine** — the multi-swarm control plane (parity
+with the UI dashboard and Telegram `/swarms` `/use`). Backed by the global
+registry under `~/.agentainer/` (override with `$AGENTAINER_STATE_DIR`), separate
+from each swarm's per-`root` `.agentainer/` runtime. See
+[multi-swarm.md](multi-swarm.md) for the full guide.
+
+```
+agentainer swarms list
+agentainer swarms create <name> [--template <example>] [--root <dir>] [--up]
+agentainer swarms register <path-to-agentainer.yaml>
+agentainer swarms remove <name>
+agentainer swarms up <name>
+agentainer swarms down <name>
+agentainer swarms build <name> --agent <claude|codex|gemini|hermes> [--command <cli>] [--mode adapt|scratch] [--notes "..."]
+agentainer swarms approve <name>
+agentainer swarms use <name>
+```
+
+| Subcommand | Meaning |
+| --- | --- |
+| `list` | Every registered swarm + live running/total agent counts. |
+| `create` | Scaffold a fresh `agentainer.yaml` (unique `session_prefix`) and register it. `--template` seeds it from a bundled `examples/<name>.yaml`; `--up` brings it up immediately. |
+| `register` | Register an existing config by path so `serve` lists it. |
+| `remove` | Forget a swarm (its config files are **left on disk**). |
+| `up` / `down` | Bring a registered swarm up / stop it (and its supervisor). |
+| `build` | Open an **interactive builder tmux session** so a coding-agent writes the config (attach with `tmux attach -t <prefix>builder`, or use the UI terminal). `--mode scratch` designs from nothing; `adapt` (default) edits an existing config. |
+| `approve` | Validate the built config, close the builder session, and bring the swarm up. |
+| `use` | Set the Telegram-active swarm (which swarm bare `/commands` target). |
+
+Any swarm you `up` (via `up` or `swarms up`) auto-registers, so it appears in a
+plain `agentainer serve` and `swarms list` without extra steps.
