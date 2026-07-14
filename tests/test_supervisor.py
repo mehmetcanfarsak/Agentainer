@@ -31,7 +31,8 @@ def p():
         "mark": [],      # mark_turn_finished args
         "log": [],       # log_event (agent, kind) tuples
         "process": 0,    # process_read_folder call count
-        "release": {},   # name -> release_next return
+        "release": {},   # name -> present_current return (mail was present-able)
+        "present": [],   # present_current args
         "nudge": [],     # nudge args
         "ping": [],      # maybe_ping args
     }
@@ -68,6 +69,10 @@ def p():
     def _release(cfg, name):
         return rec["release"].get(name, False)
 
+    def _present(cfg, name):
+        rec["present"].append(name)
+        return rec["release"].get(name, False)
+
     def _nudge(cfg, name):
         rec["nudge"].append(name)
         return True
@@ -85,6 +90,7 @@ def p():
          mock.patch.object(supervisor.turn, "mark_turn_finished", _mark_finished), \
          mock.patch.object(supervisor.mail, "process_read_folder", _process), \
          mock.patch.object(supervisor.mail, "release_next", _release), \
+         mock.patch.object(supervisor.mail, "present_current", _present), \
          mock.patch.object(supervisor.mail, "nudge", _nudge), \
          mock.patch.object(supervisor.mail, "maybe_ping", _ping), \
          mock.patch.object(supervisor.tmux, "session_exists", _session_exists), \
@@ -106,28 +112,28 @@ def test_supervise_leaves_idle_agent_alone(tmp_path, p):
     assert p["mark"] == []
     assert p["log"] == []
     assert p["process"] == 1
-    # release_next returned False -> ping path, not nudge.
+    # present_current found no mail -> ping path.
+    assert p["present"] == ["A"]
     assert p["ping"] == ["A"]
-    assert p["nudge"] == []
 
 
-def test_supervise_idle_calls_process_read_and_nudge(tmp_path, p):
+def test_supervise_idle_presents_mail_over_ping(tmp_path, p):
     cfg = _cfg(tmp_path, "  - name: A\n    type: claude\n    command: 'true'\n")
     p["session"]["A"] = True
-    p["release"]["A"] = True  # a message was released -> nudge
+    p["release"]["A"] = True  # present_current had mail to (re)announce -> no ping
     supervisor.supervise_once(cfg, ["A"], set())
     assert p["process"] == 1
-    assert p["nudge"] == ["A"]
+    assert p["present"] == ["A"]
     assert p["ping"] == []
 
 
 def test_supervise_idle_pings_when_inbox_empty(tmp_path, p):
     cfg = _cfg(tmp_path, "  - name: A\n    type: claude\n    command: 'true'\n")
     p["session"]["A"] = True
-    p["release"]["A"] = False  # nothing released -> ping
+    p["release"]["A"] = False  # present_current found nothing -> ping
     supervisor.supervise_once(cfg, ["A"], set())
+    assert p["present"] == ["A"]
     assert p["ping"] == ["A"]
-    assert p["nudge"] == []
 
 
 # --------------------------------------------------------------------------

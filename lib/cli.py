@@ -600,11 +600,12 @@ def cmd_idle(args) -> int:
     info(f"{agent.name}: marked idle")
     if not args.no_drain:
         mail.process_read_folder(cfg, agent.name)
-        # process_read_folder only archives an over-presented message; pair the
-        # release of the next queued message with a nudge, exactly as the
-        # supervisor tick does, so the escape hatch actually re-announces mail.
-        if mail.release_next(cfg, agent.name):
-            mail.nudge(cfg, agent.name)
+        # process_read_folder only archives an over-presented message; present
+        # the current inbox message (releasing the next queued one first),
+        # exactly as the supervisor tick does, so the escape hatch actually
+        # re-announces mail -- including a message already sitting unread whose
+        # earlier nudge never landed.
+        mail.present_current(cfg, agent.name)
     return 0
 
 

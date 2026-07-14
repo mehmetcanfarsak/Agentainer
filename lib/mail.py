@@ -336,6 +336,15 @@ def queued_files(cfg: SwarmConfig, agent_name: str) -> list:
     return sorted((f for f in q.iterdir() if f.is_file()), key=_queue_order)
 
 
+def _inbox_has_mail(cfg: SwarmConfig, agent_name: str) -> bool:
+    """True if *agent_name*'s inbox currently holds a message (one-at-a-time)."""
+    mp = cfg.mail_paths(cfg.get(agent_name))
+    try:
+        return any(f.is_file() for f in mp.inbox.iterdir())
+    except OSError:
+        return False
+
+
 def release_next(cfg: SwarmConfig, agent_name: str) -> bool:
     """Release the oldest queued message into *agent_name*'s inbox (one-at-a-time).
 
@@ -434,6 +443,25 @@ def nudge(cfg: SwarmConfig, agent_name: str) -> bool:
             sender = None
         turn.mark_turn_started(cfg, agent_name, sender or "system")
     return pasted
+
+
+def present_current(cfg: SwarmConfig, agent_name: str) -> bool:
+    """Idle-recovery: make sure the agent's current inbox message is on its pane.
+
+    Releases the next queued message when the inbox is empty, then nudges
+    whenever the inbox holds a message -- so a nudge whose paste never landed is
+    RETRIED on the next idle tick instead of the message sitting unseen while its
+    presentation counter silently climbs toward auto-archive (the counter alone
+    never makes the model actually read the message). Returns True if there was
+    inbox mail to present (a nudge was attempted), False when the inbox and queue
+    are both empty. Callers gate this on the agent being idle, so a successful
+    nudge marks the turn started and stops the retry on the following tick.
+    """
+    release_next(cfg, agent_name)
+    if not _inbox_has_mail(cfg, agent_name):
+        return False
+    nudge(cfg, agent_name)
+    return True
 
 
 def route_outbound(cfg: SwarmConfig, sender: str, recipient: str, body: str) -> str:

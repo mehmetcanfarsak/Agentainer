@@ -641,10 +641,9 @@ def test_cmd_compact(cfg, net, monkeypatch):
 def test_cmd_idle(cfg, net, monkeypatch):
     monkeypatch.setattr(telegram.turn, "mark_turn_finished", lambda c, n: None)
     monkeypatch.setattr(telegram.mail, "process_read_folder", lambda c, n: 0)
-    monkeypatch.setattr(telegram.mail, "nudge", lambda c, n: True)
-    monkeypatch.setattr(telegram.mail, "release_next", lambda c, n: True)
-    assert "released queued mail" in _cmd(cfg, net, "/idle alice")
-    monkeypatch.setattr(telegram.mail, "release_next", lambda c, n: False)
+    monkeypatch.setattr(telegram.mail, "present_current", lambda c, n: True)
+    assert "delivered queued mail" in _cmd(cfg, net, "/idle alice")
+    monkeypatch.setattr(telegram.mail, "present_current", lambda c, n: False)
     assert "forced idle" in _cmd(cfg, net, "/idle bob")
     assert "usage: /idle" in _cmd(cfg, net, "/idle")
 

@@ -706,9 +706,11 @@ def _cmd_idle(cfg, arg):
     a = cfg.get(_arg(arg, "usage: /idle <agent>"))
     turn.mark_turn_finished(cfg, a.name)
     mail.process_read_folder(cfg, a.name)
-    released = mail.release_next(cfg, a.name)
-    mail.nudge(cfg, a.name)
-    return f"💤 {a.name} forced idle" + (" (released queued mail)" if released else "")
+    # present_current re-announces mail (releasing the next queued message first,
+    # and re-nudging a message already unread in the inbox whose paste failed);
+    # it only nudges when there is actually mail to show.
+    presented = mail.present_current(cfg, a.name)
+    return f"💤 {a.name} forced idle" + (" (delivered queued mail)" if presented else "")
 
 
 # ---- edit config ---------------------------------------------------------

@@ -174,10 +174,13 @@ def supervise_once(cfg: SwarmConfig, names: list[str], seen_dead: set[str]) -> N
         # mail always takes priority over pings.
         if turn.busy_info(cfg, agent) is None:
             mail.process_read_folder(cfg, name)
-            if not mail.release_next(cfg, name):
+            # present_current releases the next queued message AND re-nudges a
+            # message already sitting unread in the inbox (a nudge whose paste
+            # failed once), so the heartbeat actually retries delivery rather
+            # than only announcing brand-new releases. Ping only when idle with
+            # no mail at all -- real mail always wins over a periodic ping.
+            if not mail.present_current(cfg, name):
                 mail.maybe_ping(cfg, name)
-            else:
-                mail.nudge(cfg, name)
 
 
 def _emit(cfg: SwarmConfig, kind: str, msg: str) -> None:

@@ -242,6 +242,65 @@ def test_release_next_fifo_not_starved_by_id_order(tmp_runtime):
 
 
 # --------------------------------------------------------------------------
+# _inbox_has_mail / present_current  (idle-recovery: re-nudge stuck inbox mail)
+# --------------------------------------------------------------------------
+
+
+def test_inbox_has_mail(tmp_runtime):
+    alice = make_agent(tmp_runtime, "alice", [])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    assert mailmod._inbox_has_mail(cfg, "alice") is False
+    (cfg.mail_paths(alice).inbox / "m-x.txt").write_text("hi")
+    assert mailmod._inbox_has_mail(cfg, "alice") is True
+
+
+def test_inbox_has_mail_missing_dir(tmp_runtime):
+    alice = make_agent(tmp_runtime, "alice", [])
+    cfg = build_cfg(tmp_runtime, [alice])
+    # No init_mailboxes: the inbox dir doesn't exist -> iterdir raises, swallowed.
+    assert mailmod._inbox_has_mail(cfg, "alice") is False
+
+
+def test_present_current_empty_does_not_nudge(tmp_runtime):
+    alice = make_agent(tmp_runtime, "alice", [])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    with mock.patch.object(tmuxmod, "paste_into", return_value=True) as p:
+        assert mailmod.present_current(cfg, "alice") is False
+        p.assert_not_called()
+
+
+def test_present_current_releases_and_nudges(tmp_runtime):
+    alice = make_agent(tmp_runtime, "alice", ["user"])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    mailmod.enqueue(cfg, "alice", "handle this", "m-new")
+    with mock.patch.object(tmuxmod, "paste_into", return_value=True) as p:
+        assert mailmod.present_current(cfg, "alice") is True
+        p.assert_called_once()
+    assert (cfg.mail_paths(alice).inbox / "m-new.txt").is_file()
+
+
+def test_present_current_renudges_stuck_inbox_message(tmp_runtime):
+    """The bug fix: a message already sitting UNREAD in the inbox (whose earlier
+    nudge paste never landed) is re-nudged on the next idle tick, not left unseen
+    while its presentation counter silently climbs toward auto-archive. The
+    queued message behind it must not jump the one-at-a-time inbox."""
+    alice = make_agent(tmp_runtime, "alice", ["user"])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    (cfg.mail_paths(alice).inbox / "m-stuck.txt").write_text("From: user\n\nhi")
+    mailmod.enqueue(cfg, "alice", "later", "m-later")
+    with mock.patch.object(tmuxmod, "paste_into", return_value=True) as p:
+        assert mailmod.present_current(cfg, "alice") is True
+        p.assert_called_once()  # re-nudged the stuck message
+    assert (cfg.mail_paths(alice).inbox / "m-stuck.txt").is_file()
+    assert not (cfg.mail_paths(alice).inbox / "m-later.txt").exists()
+    assert [f.name for f in mailmod.queued_files(cfg, "alice")] == ["m-later.txt"]
+
+
+# --------------------------------------------------------------------------
 # nudge
 # --------------------------------------------------------------------------
 

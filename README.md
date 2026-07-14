@@ -50,33 +50,58 @@ availability, the durable log).
 
 ## 📦 Install
 
+One command, from npm:
+
 ```bash
-git clone <repo> && cd Agentainer
-npm install            # runs the postinstall dep check; no build step
-npm link               # puts the `agentainer` bin on your PATH
+npm install -g agentainer
 agentainer --version
 ```
 
-Once linked/installed, the command is just **`agentainer`**. `tmux` is the only
-external runtime. `node` is required for the npm bin wrapper. PyYAML is used *if
-present*; a bundled `minyaml` parser keeps everything working without it.
+That's it — the command is now just **`agentainer`**, anywhere. The only thing
+you need on the machine is **`tmux`** (the agents run inside it); `node` ships the
+launcher. PyYAML is used *if present*, but a bundled `minyaml` parser keeps
+everything working without it — nothing to `pip install`.
+
+> Prefer to hack on the source? `git clone` the repo, then `npm install && npm
+> link`. Everyday users don't need this.
 
 ## 🚀 Quick start (no API keys)
 
-The bundled quickstart uses `bash` loop "mock agents" so you can watch the
-mailroom route mail safely:
+**The easiest way — open the control panel in your browser:**
 
 ```bash
-cp examples/quickstart.yaml my-swarm.yaml
-agentainer up       -c my-swarm.yaml
-agentainer status   -c my-swarm.yaml
-agentainer send     -c my-swarm.yaml --to orchestrator "Build a CSV->Parquet CLI."
-agentainer logs     -c my-swarm.yaml -f
-agentainer down     -c my-swarm.yaml
+agentainer serve
 ```
 
-To run real agents, swap each `command` for the actual CLI you installed and drop
-`capture: none` so turns get detected.
+Open the `http://127.0.0.1:…` URL it prints, click **➕ New Swarm**, pick the
+**`quickstart`** example, preview the config, and hit **Launch**. Creating swarms,
+watching mail flow, editing settings — all point-and-click.
+
+**Prefer the terminal?** Scaffold and start the same swarm from the CLI:
+
+```bash
+# scaffold the demo swarm from the bundled example and start it
+agentainer swarms create demo --template quickstart --up
+
+# it lives at ~/.agentainer/swarms/demo/agentainer.yaml — point commands at it:
+CFG=~/.agentainer/swarms/demo/agentainer.yaml
+agentainer status -c "$CFG"
+agentainer send   -c "$CFG" --to orchestrator "Build a CSV->Parquet CLI."
+agentainer logs   -c "$CFG" -f
+agentainer swarms down demo
+```
+
+**Want to try the mechanics with zero API keys / zero spend?** The example's
+`command:` lines launch real CLIs (`claude`, `codex`, `gemini`). Before you
+launch, edit the config — in the UI or the YAML — and swap each `command:` for a
+mock bash loop that just idles:
+
+```yaml
+command: "bash -c 'while true; do read -r l || sleep 1; done'"
+```
+
+That's exactly what the test suite runs, so you can watch the orchestrator accept
+mail with no models involved. To go live later, swap the real CLIs back in.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/mehmetcanfarsak/Agentainer/main/assets/demo.svg" alt="Terminal cast of the Agentainer quickstart: up, status, send, then logs showing the mailroom routing mail between mock agents" width="700"/>

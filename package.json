@@ -1,6 +1,6 @@
 {
   "name": "agentainer",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Zero-dependency multi-agent orchestrator with a file-based mail model for AI coding agents (Claude Code, Codex, Gemini, Hermes). Agents talk by reading and writing files; the orchestrator routes the mail.",
   "keywords": [
     "agents",

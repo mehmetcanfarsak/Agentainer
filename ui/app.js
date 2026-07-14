@@ -271,7 +271,7 @@
     box.appendChild(menu);
     menu.querySelector("[data-dash]").onclick = () => { menu.remove(); state.swarm = null; go("dashboard"); };
     menu.querySelector("[data-new]").onclick = () => { menu.remove(); startCreate(); };
-    menu.querySelector("[data-settings]").onclick = () => { menu.remove(); if (state.swarm) go("settings"); else if (state.swarms[0]) { state.swarm = state.swarms[0].name; go("settings"); } else toast("create a swarm first"); };
+    menu.querySelector("[data-settings]").onclick = () => { menu.remove(); go("globalsettings"); };
     for (const b of menu.querySelectorAll("[data-open]")) b.onclick = () => { menu.remove(); openSwarm(b.dataset.open); };
     setTimeout(() => document.addEventListener("click", closeSwitcherOnce, true), 0);
   }
@@ -306,6 +306,7 @@
     else if (view === "mail") renderMail();
     else if (view === "activity") renderActivity();
     else if (view === "settings") renderSettings();
+    else if (view === "globalsettings") renderGlobalSettings();
   }
 
   // Sub-navigation shown atop every per-swarm view.
@@ -837,10 +838,7 @@
     if (state.rate) { loadRates(); timers.rate = setInterval(loadRates, 5000); }
     for (const c of document.querySelectorAll(".agentcard"))
       c.onclick = (e) => { if (e.target.closest("[data-up],[data-down],[data-esc],[data-restart],[data-compact]")) return; openAgent(c.dataset.agent); };
-    for (const g of document.querySelectorAll(".gnode")) {
-      g.onclick = () => openAgent(g.dataset.agent);
-      g.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openAgent(g.dataset.agent); } };
-    }
+    wireTopology(agents);
     agents.forEach((a) => apiGet("/api/agent" + swq({ agent: a.name }))
       .then((d) => { const n = document.querySelector(`[data-role="${cssq(a.name)}"]`); if (n) n.textContent = (d.agent && d.agent.role) || "(no role set)"; })
       .catch(() => {}));
@@ -926,8 +924,20 @@
   function topologyCard(agents) {
     if (!agents.length) return "";
     return `<div class="card panel" style="margin-bottom:1rem">
-      <h3 style="margin:0 0 .4rem">Who talks to whom</h3>
+      <div class="sectiontitle" style="margin:0 0 .3rem">
+        <h3 style="margin:0">Who talks to whom</h3>
+        <button class="btn ghost sm" id="topoReset">Reset layout</button>${infoIcon("Drag any node to rearrange the graph like a mindmap — the layout is saved in this browser. Reset restores the ring.")}
+      </div>
       <div style="overflow-x:auto">${drawTopology(agents)}</div></div>`;
+  }
+  const TOPO_R = 21; // edge gap so an arrowhead lands on the circle rim, not its center
+  let topoGeom = null; // { pos, R } for the live, draggable graph
+  function topoKey(swarm) { return "topoPos:" + (swarm || ""); }
+  function loadTopoPos(swarm) {
+    try { return JSON.parse(localStorage.getItem(topoKey(swarm)) || "{}") || {}; } catch (_) { return {}; }
+  }
+  function saveTopoPos(swarm, pos) {
+    try { localStorage.setItem(topoKey(swarm), JSON.stringify(pos)); } catch (_) {}
   }
   function drawTopology(agents) {
     const byName = {};
@@ -937,13 +947,17 @@
     const W = 560, H = 300, cx = W / 2, cy = H / 2, r = Math.min(W, H) / 2 - 48, N = nodes.length;
     const pos = {};
     nodes.forEach((n, i) => { const ang = -Math.PI / 2 + (i * 2 * Math.PI) / N; pos[n] = { x: cx + r * Math.cos(ang), y: cy + r * Math.sin(ang) }; });
+    // Overlay any positions the user has dragged (persisted per swarm in this browser).
+    const saved = loadTopoPos(state.swarm);
+    nodes.forEach((n) => { const s = saved[n]; if (s && isFinite(s.x) && isFinite(s.y)) pos[n] = { x: s.x, y: s.y }; });
+    topoGeom = { pos, R: TOPO_R };
     let edges = "";
     agents.forEach((a) => (a.can_talk_to || []).forEach((p) => {
       if (pos[a.name] && pos[p]) {
         const s = pos[a.name], t = pos[p];
-        const dx = t.x - s.x, dy = t.y - s.y, len = Math.hypot(dx, dy) || 1, R = 21;
+        const dx = t.x - s.x, dy = t.y - s.y, len = Math.hypot(dx, dy) || 1, R = TOPO_R;
         const live = byName[p] && byName[p].unread > 0;
-        edges += `<line x1="${s.x + (dx / len) * R}" y1="${s.y + (dy / len) * R}" x2="${t.x - (dx / len) * R}" y2="${t.y - (dy / len) * R}" class="edge${live ? " edge-live" : ""}" marker-end="url(#arrow)"><title>Mail route under the can_talk_to ACL; a pulsing arrow means unread mail is waiting.</title></line>`;
+        edges += `<line data-from="${esc(a.name)}" data-to="${esc(p)}" x1="${s.x + (dx / len) * R}" y1="${s.y + (dy / len) * R}" x2="${t.x - (dx / len) * R}" y2="${t.y - (dy / len) * R}" class="edge${live ? " edge-live" : ""}" marker-end="url(#arrow)"><title>Mail route under the can_talk_to ACL; a pulsing arrow means unread mail is waiting.</title></line>`;
       }
     }));
     const circles = nodes.map((n) => {
@@ -953,16 +967,79 @@
       const fill = isUser ? "hsl(215 62% 48%)" : `hsl(${hueFor(n)} 62% 48%)`;
       const ring = (st && st !== "waiting") ? `<circle cx="${p.x}" cy="${p.y}" r="23" fill="none" class="gring gring-${st}"/>` : "";
       const dim = st === "stopped" ? ' opacity="0.55"' : "";
-      return `<g${!isUser ? ` class="gnode" data-agent="${esc(n)}" role="button" tabindex="0" aria-label="open ${esc(n)}"` : ""}${dim}>
-        <title>${esc("Open " + (n === "user" ? "you" : n))} — colored ring shows live state; a dimmed circle is stopped.</title>
+      const cls = "tnode" + (isUser ? "" : " gnode");
+      const rb = isUser ? "" : ` data-agent="${esc(n)}" role="button" tabindex="0" aria-label="open ${esc(n)}"`;
+      return `<g class="${cls}" data-node="${esc(n)}"${rb}${dim}>
+        <title>${isUser ? "You" : esc("Open " + n)} — drag to rearrange; colored ring shows live state; a dimmed circle is stopped.</title>
         ${ring}
         <circle cx="${p.x}" cy="${p.y}" r="19" fill="${fill}"/>
         <text x="${p.x}" y="${p.y + 4}" text-anchor="middle" class="gnode-t">${esc(initials(n))}</text>
         <text x="${p.x}" y="${p.y + 36}" text-anchor="middle" class="gnode-l">${esc(n === "user" ? "you" : n)}</text></g>`;
     }).join("");
-    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;min-width:420px;height:auto;color:var(--muted)" role="img" aria-label="agent communication graph">
+    return `<svg class="topo" viewBox="0 0 ${W} ${H}" style="width:100%;min-width:420px;height:auto;color:var(--muted);touch-action:none" role="img" aria-label="agent communication graph">
       <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
       <g class="edges">${edges}</g>${circles}</svg>`;
+  }
+  // Make every node draggable (mindmap-style); a clean click (no drag) still opens the agent.
+  function wireTopology(agents) {
+    const svg = document.querySelector("svg.topo");
+    if (!svg || !topoGeom) return;
+    const pos = topoGeom.pos, R = topoGeom.R;
+    const reset = $("topoReset");
+    if (reset) reset.onclick = () => { saveTopoPos(state.swarm, {}); if (state.view === "agents") renderAgents(); };
+    const lines = Array.from(svg.querySelectorAll("line[data-from]"));
+    function toSvg(evt) {
+      const m = svg.getScreenCTM();
+      if (!m || !svg.createSVGPoint) return { x: evt.clientX, y: evt.clientY };
+      const pt = svg.createSVGPoint(); pt.x = evt.clientX; pt.y = evt.clientY;
+      const r = pt.matrixTransform(m.inverse());
+      return { x: r.x, y: r.y };
+    }
+    function moveNode(g, name) {
+      const c = g.querySelector("circle:last-of-type") || g.querySelector("circle");
+      const home = { x: parseFloat(c.getAttribute("cx")), y: parseFloat(c.getAttribute("cy")) };
+      g.setAttribute("transform", `translate(${pos[name].x - home.x} ${pos[name].y - home.y})`);
+      for (const ln of lines) {
+        const f = ln.getAttribute("data-from"), t = ln.getAttribute("data-to");
+        if (f !== name && t !== name) continue;
+        const s = pos[f], e = pos[t]; if (!s || !e) continue;
+        const dx = e.x - s.x, dy = e.y - s.y, len = Math.hypot(dx, dy) || 1;
+        ln.setAttribute("x1", s.x + (dx / len) * R); ln.setAttribute("y1", s.y + (dy / len) * R);
+        ln.setAttribute("x2", e.x - (dx / len) * R); ln.setAttribute("y2", e.y - (dy / len) * R);
+      }
+    }
+    svg.querySelectorAll("[data-node]").forEach((g) => {
+      const name = g.getAttribute("data-node");
+      const agent = g.classList.contains("gnode");
+      let dragging = false, moved = false, offx = 0, offy = 0, sx = 0, sy = 0;
+      g.style.cursor = "grab";
+      g.addEventListener("pointerdown", (evt) => {
+        if (evt.button != null && evt.button !== 0) return;
+        dragging = true; moved = false;
+        const c = toSvg(evt); offx = c.x - pos[name].x; offy = c.y - pos[name].y;
+        sx = evt.clientX; sy = evt.clientY; g.style.cursor = "grabbing";
+        try { g.setPointerCapture(evt.pointerId); } catch (_) {}
+        evt.preventDefault();
+      });
+      g.addEventListener("pointermove", (evt) => {
+        if (!dragging) return;
+        if (Math.abs(evt.clientX - sx) + Math.abs(evt.clientY - sy) > 3) moved = true;
+        const c = toSvg(evt);
+        pos[name].x = c.x - offx; pos[name].y = c.y - offy;
+        moveNode(g, name);
+      });
+      function end() {
+        if (!dragging) return;
+        dragging = false; g.style.cursor = "grab";
+        if (moved) saveTopoPos(state.swarm, pos);
+      }
+      g.addEventListener("pointerup", (evt) => {
+        const wasMoved = moved; end();
+        if (!wasMoved && agent) openAgent(name);
+      });
+      g.addEventListener("pointercancel", end);
+      if (agent) g.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openAgent(name); } };
+    });
   }
 
   // ---- activity timeline -------------------------------------------------
@@ -1391,7 +1468,7 @@
             <div class="sectiontitle" style="margin:0 0 .6rem"><h3>Agents</h3><button class="btn sm" id="addAgent">+ Add agent</button>${infoIcon("Define a new agent; it is created and its session launched on save.")}</div>
             ${agents || '<p class="muted">No agents yet.</p>'}
           </div>
-          ${globalTelegramCard(state.settings)}
+          <p class="muted" style="font-size:.86rem">Looking for Telegram? It is shared by every swarm — open <b>Global settings</b> from the swarm switcher.</p>
         </div>`;
       wireSubnav();
       $("saveSwarm").onclick = () => saveSwarm(["name", "root"], true);
@@ -1399,6 +1476,23 @@
       $("addAgent").onclick = () => openAgentForm(null);
       for (const b of document.querySelectorAll("[data-edit]")) b.onclick = () => openAgentForm(b.dataset.edit);
       for (const b of document.querySelectorAll("[data-del]")) b.onclick = () => deleteAgent(b.dataset.del);
+    }).catch((e) => banner(e.message));
+  }
+
+  // Standalone global settings (machine-wide; not tied to any one swarm).
+  function renderGlobalSettings() {
+    $("availWrap").hidden = true;
+    apiGet("/api/settings").then((settings) => {
+      state.settings = settings || state.settings;
+      $("view").innerHTML = `
+        <div class="sectiontitle">
+          <h2>Global settings <span class="muted" style="font-weight:500">· shared by every swarm on this machine</span></h2>
+          <button class="btn ghost sm" id="gsBack">← Dashboard</button>
+        </div>
+        <div class="settings">
+          ${globalTelegramCard(state.settings)}
+        </div>`;
+      $("gsBack").onclick = () => { state.swarm = null; go("dashboard"); };
       wireGlobalTelegram();
     }).catch((e) => banner(e.message));
   }
@@ -1457,8 +1551,7 @@
     $("tgNudgeGo").onclick = () => {
       try { localStorage.setItem(TG_NUDGE_KEY, "1"); } catch (_) {}
       nudge.remove();
-      if (!state.swarm && state.swarms[0]) state.swarm = state.swarms[0].name;
-      if (state.swarm) go("settings"); else toast("create a swarm first, then open Settings");
+      go("globalsettings");
     };
     $("tgNudgeX").onclick = () => { try { localStorage.setItem(TG_NUDGE_KEY, "1"); } catch (_) {} nudge.remove(); };
   }
@@ -1510,7 +1603,7 @@
       if (!res.ok) { toast("error: " + (res.j.error || "failed")); return; }
       state.settings = res.j;
       toast("Telegram settings saved");
-      renderSettings();
+      if (state.view === "globalsettings") renderGlobalSettings(); else renderSettings();
     });
   }
   function testGlobalTelegram() {
@@ -1695,7 +1788,14 @@
     document.addEventListener("mouseover", (e) => { if (pinned) return; const elm = tipTarget(e.target); if (elm) show(elm, false); });
     document.addEventListener("mouseout", (e) => { if (pinned) return; if (tipTarget(e.target)) hide(); });
     document.addEventListener("click", (e) => {
-      const elm = tipTarget(e.target);
+      const tgt = e.target;
+      // A real interactive control (that isn't the ⓘ affordance itself) must
+      // keep its own click — don't hijack it to pin a tooltip. Otherwise a
+      // button/link carrying data-tip (e.g. the swarm switcher, the brand)
+      // never fires its handler because we'd stopPropagation the click.
+      const ctrl = tgt && tgt.closest && tgt.closest("button, a, input, textarea, select, label, summary, [role=button]");
+      if (ctrl && !(tgt.closest && tgt.closest(".info"))) { if (pinned) hide(); return; }
+      const elm = tipTarget(tgt);
       if (elm) { e.stopPropagation(); e.preventDefault(); if (pinned && curr === elm) { hide(); } else { pinned = true; show(elm, true); } }
       else if (pinned) { hide(); }
     }, true);

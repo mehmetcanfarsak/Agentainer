@@ -102,7 +102,7 @@ def patch_launch(monkeypatch, n_agents=2, wait=True, paste=True, always=False):
 
 
 def test_read_version_real():
-    assert cli.read_version() == "2.1.0"
+    assert cli.read_version() == "2.1.1"
 
 
 def test_read_version_fallback(monkeypatch, tmp_path):

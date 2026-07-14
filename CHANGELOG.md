@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 🎉 [2.1.1] — 2026-07-14
+
+### 🐛 Fixed
+- **Idle agent never re-nudged about a message already in its inbox.** A nudge
+  whose paste failed to land (agent looked idle, but the "you have mail" prompt
+  never reached the pane) was never retried: the idle-recovery paths only nudged
+  on a *fresh* `release_next`, so a message already sitting unread in the inbox
+  was silently counted toward auto-archive and the model never saw it. New
+  `mail.present_current` releases the next queued message **and** re-nudges
+  whenever the inbox holds a message; the supervisor tick, `agentainer idle`, and
+  Telegram `/idle` now use it, so a lost paste is retried on the next idle tick
+  (as `nudge`'s contract always promised). Reminder: this retry is the liveness
+  supervisor's job — a swarm running without `serve`/`supervise` has no heartbeat
+  to fire it.
+
 ## 🎉 [2.1.0] — 2026-07-14
 
 ### ✨ Added
@@ -139,6 +154,7 @@ plus the bundled use-case docs and example swarms.
   other agent *and* preserves explicitly listed extras (notably `user`), which
   `*` does not cover, instead of replacing the whole list.
 
+[2.1.1]: https://github.com/mehmetcanfarsak/Agentainer/releases/tag/v2.1.1
 [2.1.0]: https://github.com/mehmetcanfarsak/Agentainer/releases/tag/v2.1.0
 [2.0.1]: https://github.com/mehmetcanfarsak/Agentainer/releases/tag/v2.0.1
 
