@@ -5,6 +5,41 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 🚧 [Unreleased]
+
+### ✨ Added
+- **Swarm reset / start-over (two levels), on all four control planes.** A new
+  `reset` primitive (`lib/reset.py`) clears a swarm's data so it starts fresh:
+  a soft **`reset`** wipes Agentainer's own state (recorded conversations, mail,
+  queue, durable log) but keeps the agents' work files, and **`reset --full`**
+  additionally deletes each agent's workspace directory for a truly blank swarm
+  (the config file is always preserved — a workspace that holds the config is
+  skipped). Both levels refuse while any agent or the supervisor is running.
+  Shipped on CLI (`agentainer reset [--full]`), the UI (a per-swarm **Reset**
+  button; the hard wipe requires typing the swarm name), Telegram (`/reset
+  [full]`), and MCP (`reset_swarm`). `remove-session` remains as a soft-reset
+  alias.
+- **Per-agent coding-agent configuration in the YAML.** Each agent can now
+  declare `mcp:` (MCP servers), `context:` (a standing project-context file),
+  `skills:` (local Claude-skill directories), `settings:` (CLI settings), and
+  `files:` (arbitrary relative-path → content). A new `lib/materialize.py` lays
+  these down in the agent's workdir at launch, **type-aware** (context →
+  `CLAUDE.md`/`AGENTS.md`/`GEMINI.md`; mcp → `.mcp.json` / codex `config.toml`
+  `[mcp_servers.*]` / `.gemini/settings.json`; skills → `.claude/skills/`) and
+  **merge-not-clobber** (settings coexist with the installed Stop/SessionStart
+  hooks; re-runs are idempotent). Unsupported combinations warn rather than fail.
+  Editable from the YAML, the UI agent editor ("Coding-agent config"), and the
+  MCP `configure_agent` tool. See `docs/configuration.md` and the new
+  `examples/mcp-configured.yaml`.
+
+### 🐛 Fixed
+- **Multiline strings survive a config write-back.** The stdlib YAML emitter
+  (`reconcile._dump`) rendered any newline-containing string as a double-quoted
+  scalar with literal newlines — invalid YAML that failed to reparse. It now
+  emits a `|` block scalar, so a multiline `role:` (and the new `context:` /
+  `files:` values) round-trips through the UI / `edit_agent` / `add_agent` and
+  the no-PyYAML `minyaml` reader.
+
 ## 🎉 [2.1.1] — 2026-07-14
 
 ### ✨ Added

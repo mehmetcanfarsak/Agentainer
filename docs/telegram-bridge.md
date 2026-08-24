@@ -293,6 +293,7 @@ swarm that bare `/commands` target).
 | `/down [agent]` | stop all / one | `reconcile.stop_all` / `stop_one` |
 | `/restart [agent]` | restart all / one | `reconcile.stop_* + start_*` |
 | `/reconcile` | make the running set match the config | `reconcile.reconcile` |
+| `/reset [full]` | start over: clear state (soft), or `full` to also delete work files; refuses while agents run | `reset.reset` |
 | `/to <agent> <msg>` | send mail **as the user** | `mail.send_as_user` |
 | *(reply to a mirrored msg)* | answer its sender as the user | `telegram._route_user_reply` |
 | `/available` · `/away` | toggle your availability | `reconcile.edit_swarm` + `mail.set_user_available` |

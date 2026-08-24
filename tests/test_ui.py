@@ -856,6 +856,37 @@ def test_api_agent_add_with_pings(cfg):
         assert "dave" not in cfgmod.load(cfg.path).names()
 
 
+def test_api_agent_add_with_coding_config(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        code, body = _post(h, "/api/agent/add", "sekret", {
+            "name": "carol", "type": "claude", "command": "claude --x",
+            "can_talk_to": ["alice"],
+            "context": "You are carol.\nReview carefully.",
+            "mcp": {"gh": {"command": "npx", "args": ["-y", "s"]}},
+            "settings": {"model": "opus"},
+            "files": {"docs/NOTES.md": "line1\nline2"},
+        })
+        assert code == 200
+        import config as cfgmod
+        carol = cfgmod.load(cfg.path).get("carol")
+        assert carol.mcp == {"gh": {"command": "npx", "args": ["-y", "s"]}}
+        assert carol.context.startswith("You are carol.")
+        assert carol.settings == {"model": "opus"}
+        assert carol.files == {"docs/NOTES.md": "line1\nline2"}
+
+
+def test_api_agent_edit_coding_config(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        code, _ = _post(h, "/api/agent/edit", "sekret", {
+            "name": "alice",
+            "fields": {"context": "multi\nline\nctx", "mcp": {"x": {"command": "y"}}},
+        })
+        assert code == 200
+        import config as cfgmod
+        alice = cfgmod.load(cfg.path).get("alice")
+        assert alice.context == "multi\nline\nctx" and alice.mcp == {"x": {"command": "y"}}
+
+
 def test_api_agent_edit_pings(cfg):
     with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
         code, _ = _post(h, "/api/agent/edit", "sekret", {
@@ -1533,6 +1564,36 @@ def test_api_swarms_down_supervisor_absent(tmp_path):
         with _rb_server() as h:
             code, _ = _qpost(h, "/api/swarms/down", "sekret", {"name": "downit2"})
     assert code == 200
+
+
+def test_api_swarms_reset_state_and_errors(tmp_path):
+    # empty swarm -> no running agents -> soft reset succeeds
+    path = registry.create_swarm("resetme")
+    import config as cfgmod
+    cfg = cfgmod.load(path)
+    (cfg.runtime / "logs").mkdir(parents=True, exist_ok=True)
+    with mock_tmux(), _rb_server() as h:
+        code, body = _qpost(h, "/api/swarms/reset", "sekret", {"name": "resetme"})
+        assert code == 200
+        j = json.loads(body)
+        assert j["ok"] is True and j["level"] == "state"
+        assert not cfg.runtime.exists()
+        # bad level -> 400
+        assert _qpost(h, "/api/swarms/reset", "sekret",
+                      {"name": "resetme", "level": "nuke"})[0] == 400
+        # unknown swarm -> 404
+        assert _qpost(h, "/api/swarms/reset", "sekret", {"name": "ghost"})[0] == 404
+        assert _post_raw(h, "/api/swarms/reset", "sekret", b"nope") == 400
+
+
+def test_api_swarms_reset_refuses_while_running(tmp_path):
+    # a swarm WITH an agent, under mock_tmux(has_session=True) -> guard 409
+    standalone = load_swarm(tmp_path, AGENTS, name="livereset")
+    registry.register(standalone.name, standalone.path)
+    with mock_tmux(has_session=True), _rb_server() as h:
+        code, body = _qpost(h, "/api/swarms/reset", "sekret", {"name": "livereset"})
+        assert code == 409
+        assert "running" in json.loads(body)["error"]
 
 
 def test_api_swarms_register_success_and_errors(tmp_path):

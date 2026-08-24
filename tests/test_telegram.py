@@ -497,6 +497,26 @@ def test_cmd_down(cfg, net, monkeypatch):
     assert "no agents were running" in _cmd(cfg, net, "/down")
 
 
+def test_cmd_reset(cfg, net, monkeypatch):
+    monkeypatch.setattr(telegram.resetmod, "guard_stopped", lambda c: None)
+    (cfg.runtime / "logs").mkdir(parents=True, exist_ok=True)
+    out = _cmd(cfg, net, "/reset")
+    assert "reset" in out and "removed" in out and "work files kept" in out
+    # full wipe wording
+    monkeypatch.setattr(telegram.resetmod, "reset",
+                        lambda c, level: {"level": level, "removed": ["x"], "warnings": ["kept cfg"]})
+    out2 = _cmd(cfg, net, "/reset full")
+    assert "full wipe" in out2 and "kept cfg" in out2
+
+
+def test_cmd_reset_refused(cfg, net, monkeypatch):
+    def boom(c):
+        raise telegram.resetmod.ResetError("bring the swarm down first")
+    monkeypatch.setattr(telegram.resetmod, "guard_stopped", boom)
+    out = _cmd(cfg, net, "/reset")
+    assert "⚠️" in out and "down first" in out
+
+
 def test_cmd_restart(cfg, net, monkeypatch):
     monkeypatch.setattr(telegram.reconcile, "stop_one", lambda c, n: True)
     monkeypatch.setattr(telegram.reconcile, "start_one", lambda c, n: True)

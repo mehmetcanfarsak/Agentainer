@@ -606,6 +606,32 @@ def test_scalar_renderer_variants():
     assert reconcile._scalar(1.5) == "1.5"
 
 
+def test_block_scalar_roundtrip_multiline():
+    """Multiline strings emit as `|` block scalars and reparse identically.
+
+    Covers both chomping cases: no trailing newline (`|-`) and one trailing
+    newline (`|`, clipped). A double-quoted scalar with a literal newline is
+    invalid YAML, so this is what keeps a multiline `role:`/`context:` writable.
+    """
+    import minyaml
+
+    cases = [
+        {"agents": [{"name": "dev", "role": "a\nb\nc", "can_talk_to": ["user"]}]},
+        {"defaults": {"context": "line1\nline2\n"}},          # trailing newline -> |
+        {"files": {"CLAUDE.md": "# T\n\nbody"}},              # internal blank line
+    ]
+    for case in cases:
+        out = reconcile._dump(case)
+        assert minyaml.load(out) == case
+    # the emitter really used a block scalar (not a broken quoted one)
+    assert "|" in reconcile._dump({"x": "p\nq\n"})
+
+
+def test_block_body_chomping():
+    assert reconcile._block_body("a\nb")[0] == "|-"      # no trailing newline
+    assert reconcile._block_body("a\nb\n")[0] == "|"     # trailing newline -> clip
+
+
 def test_coerce_field_wildcard_and_bool():
     assert reconcile._coerce_field("can_talk_to", "*") == "*"
     assert reconcile._coerce_field("flag", "true") is True

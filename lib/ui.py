@@ -86,6 +86,7 @@ import mail  # noqa: E402
 import mcp  # noqa: E402
 import reconcile  # noqa: E402
 import registry  # noqa: E402
+import reset as resetmod  # noqa: E402
 import scaffold  # noqa: E402
 import telegram  # noqa: E402
 import tmux  # noqa: E402
@@ -379,6 +380,8 @@ class UIHandler(BaseHTTPRequestHandler):
             self._api_swarms_up(raw)
         elif path == "/api/swarms/down":
             self._api_swarms_down(raw)
+        elif path == "/api/swarms/reset":
+            self._api_swarms_reset(raw)
         elif path == "/api/swarms/register":
             self._api_swarms_register(raw)
         elif path == "/api/swarms/remove":
@@ -544,6 +547,33 @@ class UIHandler(BaseHTTPRequestHandler):
         if sup is not None:
             sup.stop_supervisor(cfg)
         self._send_json(200, {"ok": True, "name": name, "stopped": stopped})
+
+    def _api_swarms_reset(self, raw: bytes) -> None:
+        """Start a swarm over: ``level`` ``state`` (soft) or ``full`` (hard wipe).
+
+        Refuses (409) while any agent or the supervisor is running -- the caller
+        must down the swarm first. ``full`` also deletes the agents' work files;
+        the front-end gates it behind a typed-name confirmation.
+        """
+        data = self._json_body(raw)
+        if data is None:
+            return
+        name, cfg = self._resolve_swarm(data)
+        if cfg is None:
+            return
+        level = data.get("level") or "state"
+        try:
+            resetmod.guard_stopped(cfg)
+        except resetmod.ResetError as exc:
+            self._send_json(409, {"error": str(exc)})
+            return
+        try:
+            result = resetmod.reset(cfg, level)
+        except resetmod.ResetError as exc:  # bad level
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._refresh_swarms()
+        self._send_json(200, {"ok": True, "name": name, **result})
 
     def _api_swarms_register(self, raw: bytes) -> None:
         data = self._json_body(raw)
@@ -1434,6 +1464,11 @@ class UIHandler(BaseHTTPRequestHandler):
         # loader validates each cron (a bad one is surfaced as 400, not a no-op).
         if isinstance(data.get("pings"), list) and data["pings"]:
             extra["pings"] = data["pings"]
+        # Per-agent coding-agent config (materialised at launch). Only non-empty
+        # values are written, so a fresh agent's config stays clean.
+        for k in ("mcp", "context", "skills", "settings", "files"):
+            if data.get(k) not in (None, "", {}, []):
+                extra[k] = data[k]
         try:
             new_cfg = reconcile.add_agent(
                 self.cfg,

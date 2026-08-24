@@ -215,6 +215,7 @@ agentainer.yaml  ──▶  agentainer up  ──▶  one tmux session + workdir
 | 🆙 `up` | Create dirs + mailbox folders, install per-type turn-detection, open one tmux session per agent. |
 | 🔌 `down` | Tear the swarm down. |
 | 🔁 `restart` | Down then up. |
+| ↺ `reset` | Start over: clear state (soft), or `--full` to also delete work files (config kept). |
 | 📡 `status` | Show agent/health summary. |
 | 🔗 `attach` | Attach to an agent's tmux session. |
 | ✉️ `send` | Send a `user` message into the swarm (`--to <agent>`). |

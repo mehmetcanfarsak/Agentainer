@@ -363,6 +363,29 @@ def test_down_swarm(cfg, swarms, monkeypatch):
     assert out["stopped"] == ["alice"]
 
 
+def test_reset_swarm_state(cfg, swarms, monkeypatch):
+    monkeypatch.setattr(mcp.resetmod, "guard_stopped", lambda c: None)
+    (cfg.runtime / "logs").mkdir(parents=True, exist_ok=True)
+    out = _payload(_call("reset_swarm", {"swarm": "demo"}, swarms=swarms))
+    assert out["ok"] and out["level"] == "state"
+    assert not cfg.runtime.exists()
+
+
+def test_reset_swarm_default_level(cfg, swarms, monkeypatch):
+    monkeypatch.setattr(mcp.resetmod, "guard_stopped", lambda c: None)
+    out = _payload(_call("reset_swarm", {"swarm": "demo"}, swarms=swarms))
+    assert out["level"] == "state"
+
+
+def test_reset_swarm_refused_while_running(cfg, swarms, monkeypatch):
+    def boom(c):
+        raise mcp.resetmod.ResetError("still running")
+    monkeypatch.setattr(mcp.resetmod, "guard_stopped", boom)
+    res = _call("reset_swarm", {"swarm": "demo"}, swarms=swarms)
+    assert res["isError"] is True
+    assert "still running" in res["content"][0]["text"]
+
+
 def test_create_swarm():
     out = _payload(_call("create_swarm", {"name": "fresh"}, swarms={}))
     assert out["ok"] and out["name"] == "fresh"
@@ -380,6 +403,35 @@ def test_create_swarm_duplicate(cfg):
     res = _call("create_swarm", {"name": "demo"}, swarms={})
     assert res["isError"] is True
     assert "already registered" in res["content"][0]["text"]
+
+
+def test_configure_agent(cfg, swarms):
+    out = _payload(_call(
+        "configure_agent",
+        {"swarm": "demo", "agent": "alice",
+         "mcp": {"gh": {"command": "npx"}},
+         "context": "You are alice.\nBe precise.",
+         "skills": [], "settings": {"model": "opus"}, "files": {"a/b.md": "x"}},
+        swarms=swarms,
+    ))
+    assert out["ok"] and set(out["configured"]) >= {"mcp", "context", "settings", "files"}
+    import config as cfgmod
+    a = cfgmod.load(cfg.path).get("alice")
+    assert a.mcp == {"gh": {"command": "npx"}}
+    assert a.context.startswith("You are alice.")
+    assert a.settings == {"model": "opus"} and a.files == {"a/b.md": "x"}
+
+
+def test_configure_agent_requires_a_field(cfg, swarms):
+    res = _call("configure_agent", {"swarm": "demo", "agent": "alice"}, swarms=swarms)
+    assert res["isError"] is True
+    assert "at least one" in res["content"][0]["text"]
+
+
+def test_configure_agent_bad_value(cfg, swarms):
+    # a non-mapping mcp is rejected by the loader -> surfaced as an error
+    res = _call("configure_agent", {"swarm": "demo", "agent": "alice", "mcp": [1, 2]}, swarms=swarms)
+    assert res["isError"] is True
 
 
 def test_add_agent(cfg, swarms):

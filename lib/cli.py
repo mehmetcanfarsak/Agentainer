@@ -32,6 +32,7 @@ from config import ConfigError  # noqa: E402
 import hooks  # noqa: E402
 import log  # noqa: E402
 import mail  # noqa: E402
+import materialize  # noqa: E402
 import mcp as mcpmod  # noqa: E402
 import sessions  # noqa: E402
 import tmux  # noqa: E402
@@ -39,6 +40,7 @@ import turn  # noqa: E402
 import ui  # noqa: E402
 import reconcile  # noqa: E402
 import registry  # noqa: E402
+import reset as resetmod  # noqa: E402
 import scaffold  # noqa: E402
 
 # Repo root: AGENTAINER_HOME overrides, else this file's grandparent (lib/..).
@@ -212,6 +214,13 @@ def start_agent(cfg, agent, extra_env=None, resume_cmd: str | None = None) -> No
             )
         agent.workdir.mkdir(parents=True, exist_ok=True)
         info(f"{agent.name}: created {agent.workdir}")
+
+    # Materialise per-agent coding-agent config (mcp / context / skills /
+    # settings / files) into the workdir. Runs after turn-detection has installed
+    # .claude/settings.json (in launch_agent_full), so `settings:` merges with the
+    # hook config rather than clobbering it. Best-effort: warnings, never fatal.
+    for message in materialize.apply(cfg, agent):
+        warn(f"{agent.name}: {message}")
 
     # A newly launched CLI has no turn in flight (resumed or not).
     turn.write_turn_state(cfg, agent.name, {"delivered": 0, "completed": 0, "since": 0, "by": None})
@@ -431,34 +440,49 @@ def cmd_remove_session(args) -> int:
 
     Refuses while any agent (or the supervisor) is still running, because pulling
     state out from under a live agent corrupts it -- ``down`` first.
+
+    This is the ``state`` (soft) level of ``reset``; ``remove-session`` is kept as
+    a back-compat alias and routes through the same shared core (``lib/reset.py``).
     """
     cfg = cfgmod.load(args.config)
-
-    if shutil.which("tmux"):
-        for agent in cfg.agents:
-            if tmux.session_exists(agent.session):
-                die(
-                    f"{agent.name} is still running -- run `down` first, "
-                    "then `remove-session`"
-                )
-        if _supervisor_alive(cfg):
-            die("the liveness supervisor is still running -- run `down` first")
-
-    removed: list[Path] = []
-    if cfg.runtime.exists():
-        shutil.rmtree(cfg.runtime)
-        removed.append(cfg.runtime)
-    for agent in cfg.agents:
-        mp = cfg.mail_paths(agent)
-        for folder in (mp.inbox, mp.outbox, mp.read, mp.sent, mp.failed):
-            if folder.exists():
-                shutil.rmtree(folder)
-                removed.append(folder)
-
+    try:
+        resetmod.guard_stopped(cfg)
+    except resetmod.ResetError as exc:
+        die(str(exc))
+    result = resetmod.reset(cfg, "state")
+    removed = result["removed"]
     if not removed:
         info("nothing to remove -- the swarm is already clean")
         return 0
     info(f"removed Agentainer session data ({len(removed)} path(s)):")
+    for path in removed:
+        info(f"  {path}")
+    return 0
+
+
+def cmd_reset(args) -> int:
+    """Reset a swarm to a clean slate: ``state`` (soft) or ``--full`` (hard).
+
+    ``state`` clears Agentainer's own data (conversations, mail, queue, logs) but
+    keeps the agents' work files. ``--full`` also deletes each agent's workspace
+    directory (their produced work), leaving a truly blank swarm -- the config
+    file is always preserved. Refuses while agents (or the supervisor) run.
+    """
+    cfg = cfgmod.load(args.config)
+    try:
+        resetmod.guard_stopped(cfg)
+    except resetmod.ResetError as exc:
+        die(str(exc))
+    level = "full" if getattr(args, "full", False) else "state"
+    result = resetmod.reset(cfg, level)
+    for message in result["warnings"]:
+        warn(message)
+    removed = result["removed"]
+    if not removed:
+        info("nothing to remove -- the swarm is already clean")
+        return 0
+    label = "full wipe" if level == "full" else "reset"
+    info(f"{label}: removed {len(removed)} path(s):")
     for path in removed:
         info(f"  {path}")
     return 0
@@ -1031,6 +1055,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     add("remove-session", cmd_remove_session,
         "delete all Agentainer state (runtime + mailboxes) so the next up starts fresh")
+
+    p_reset = add("reset", cmd_reset,
+        "start over: clear Agentainer state (soft), or --full to also delete work files")
+    p_reset.add_argument("--full", action="store_true",
+        help="delete each agent's workspace files too (hard wipe; config is kept)")
 
     p_down = add("down", cmd_down, "kill agent tmux sessions")
     p_down.add_argument("--only", help="comma-separated subset of agents to stop")

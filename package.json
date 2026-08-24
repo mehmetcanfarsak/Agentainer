@@ -43,6 +43,7 @@
     "scripts/check-deps.js",
     "agentainer",
     "examples/*.yaml",
+    "examples/skills/**/*.md",
     "agentainer.example.yaml",
     "README.md",
     "llms.txt"

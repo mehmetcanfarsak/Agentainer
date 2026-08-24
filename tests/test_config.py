@@ -978,3 +978,130 @@ def test_telegram_disabled_when_no_block_and_no_global(tmp_path):
     assert cfg.telegram.enabled is False
     assert cfg.telegram.bot_token == ""
     assert cfg.telegram.chat_id == ""
+
+
+# ---------------------------------------------- per-agent coding-agent config
+
+def test_agent_config_parses_and_merges(tmp_path):
+    sk = tmp_path / "sk"
+    sk.mkdir()
+    cfg = load_config(
+        "swarm: {root: ./ws}\n"
+        "defaults: {type: claude, mcp: {base: {command: b}}, settings: {a: 1}}\n"
+        "agents:\n"
+        "  - name: dev\n"
+        "    command: 'true'\n"
+        "    can_talk_to: [user]\n"
+        "    context: |\n"
+        "      You are dev.\n"
+        "      Be careful.\n"
+        "    mcp: {github: {command: npx}}\n"
+        "    settings: {model: opus}\n"
+        f"    skills: ['{sk}']\n"
+        "    files: {'notes/todo.md': 'do it'}\n",
+        tmp_path,
+    )
+    a = cfg.get("dev")
+    assert set(a.mcp) == {"base", "github"}          # defaults + agent merged
+    assert a.settings == {"a": 1, "model": "opus"}    # shallow-merged
+    assert a.context.startswith("You are dev.")
+    assert [p.name for p in a.skills] == ["sk"]
+    assert a.files == {"notes/todo.md": "do it"}
+
+
+def test_agent_config_defaults_only(tmp_path):
+    # context/skills pulled purely from defaults; single skill as a bare string.
+    sk = tmp_path / "sk2"
+    sk.mkdir()
+    cfg = load_config(
+        "swarm: {root: ./ws}\n"
+        f"defaults: {{type: claude, context: 'shared ctx', skills: '{sk}'}}\n"
+        "agents:\n  - {name: dev, command: 'true'}\n",
+        tmp_path,
+    )
+    a = cfg.get("dev")
+    assert a.context == "shared ctx"
+    assert [p.name for p in a.skills] == ["sk2"]
+
+
+def test_mcp_must_be_mapping(tmp_path):
+    with pytest.raises(ConfigError, match="expected a mapping"):
+        load_config(
+            "swarm: {root: ./ws}\n"
+            "defaults: {type: claude}\n"
+            "agents:\n  - {name: dev, command: 'true', mcp: [1, 2]}\n",
+            tmp_path,
+        )
+
+
+def test_files_must_be_mapping(tmp_path):
+    with pytest.raises(ConfigError, match="must be a mapping"):
+        load_config(
+            "swarm: {root: ./ws}\n"
+            "defaults: {type: claude}\n"
+            "agents:\n  - {name: dev, command: 'true', files: [a, b]}\n",
+            tmp_path,
+        )
+
+
+def test_files_rejects_absolute(tmp_path):
+    with pytest.raises(ConfigError, match="must be relative"):
+        load_config(
+            "swarm: {root: ./ws}\n"
+            "defaults: {type: claude}\n"
+            "agents:\n  - {name: dev, command: 'true', files: {'/etc/x': 'y'}}\n",
+            tmp_path,
+        )
+
+
+def test_files_rejects_traversal(tmp_path):
+    with pytest.raises(ConfigError, match="must be relative"):
+        load_config(
+            "swarm: {root: ./ws}\n"
+            "defaults: {type: claude}\n"
+            "agents:\n  - {name: dev, command: 'true', files: {'../evil': 'y'}}\n",
+            tmp_path,
+        )
+
+
+def test_files_rejects_empty_path(tmp_path):
+    with pytest.raises(ConfigError, match="empty path"):
+        load_config(
+            "swarm: {root: ./ws}\n"
+            "defaults: {type: claude}\n"
+            "agents:\n  - {name: dev, command: 'true', files: {'   ': 'y'}}\n",
+            tmp_path,
+        )
+
+
+def test_skills_missing_dir(tmp_path):
+    with pytest.raises(ConfigError, match="not a directory"):
+        load_config(
+            "swarm: {root: ./ws}\n"
+            "defaults: {type: claude}\n"
+            "agents:\n  - {name: dev, command: 'true', skills: ['/no/such/dir']}\n",
+            tmp_path,
+        )
+
+
+def test_skills_blank_entry_skipped(tmp_path):
+    cfg = load_config(
+        "swarm: {root: ./ws}\n"
+        "defaults: {type: claude}\n"
+        "agents:\n  - {name: dev, command: 'true', skills: ['', '  ']}\n",
+        tmp_path,
+    )
+    assert cfg.get("dev").skills == []
+
+
+def test_skills_relative_path_resolves(tmp_path):
+    (tmp_path / "rel_sk").mkdir()
+    cfg = load_config(
+        "swarm: {root: ./ws}\n"
+        "defaults: {type: claude}\n"
+        "agents:\n  - {name: dev, command: 'true', skills: ['rel_sk']}\n",
+        tmp_path,
+    )
+    a = cfg.get("dev")
+    assert [p.name for p in a.skills] == ["rel_sk"]
+    assert a.skills[0].is_absolute()

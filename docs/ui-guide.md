@@ -213,6 +213,26 @@ next request sees the change:
 - `GET`/`POST /api/config` — read the raw settings/agents, or persist swarm-level
   settings (`reconcile.edit_swarm`).
 
+#### Coding-agent config in the agent form
+
+The add/edit agent form has a collapsible **Coding-agent config** section for
+declaring what the agent's CLI reads: a **Context** file, **MCP servers** (JSON),
+**Settings** (JSON), **Skills** (one directory per line), and **Extra files**
+(JSON path → content). These are written into `agentainer.yaml` and
+[materialised into the agent's workdir](configuration.md#coding-agent-config) on
+its next start — type-aware and merge-not-clobber. Invalid JSON is caught before
+save. Structured/multiline values now round-trip through the YAML writer (a `role`
+or `context` spanning several lines is emitted as a `|` block scalar).
+
+### Reset / start over
+
+Each card on the **swarms dashboard** has a **Reset** button that opens a modal
+with two levels: **Reset state** (clear conversations, mail, queue & logs; keep
+the agents' work files) and **Wipe everything** (also delete the agents' workspace
+files). The hard wipe requires typing the swarm name to confirm. Both post to
+`POST /api/swarms/reset` (`level: "state" | "full"`) and **refuse with a `409`
+while the swarm is running** — stop it first. The config file is always kept.
+
 Removing an agent that a peer still lists in `can_talk_to` would leave the config
 invalid; the server surfaces that as a `400` rather than writing a broken file.
 

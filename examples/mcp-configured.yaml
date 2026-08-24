@@ -1,0 +1,65 @@
+# =============================================================================
+# 🔌 Per-agent coding-agent config -- MCP servers, context files, skills, settings.
+#
+# Everything an agent's CLI needs is declared here and MATERIALISED into its
+# workdir at launch, so the swarm ships fully configured from one file:
+#
+#   mcp:      -> .mcp.json (claude) / .gemini/settings.json (gemini) /
+#                [mcp_servers.*] in .codex/config.toml (codex)
+#   context:  -> CLAUDE.md (claude) / AGENTS.md (codex) / GEMINI.md (gemini)
+#   skills:   -> copied into .claude/skills/<name>/ (claude only)
+#   settings: -> merged into .claude/settings.json (claude) — hooks are preserved
+#   files:    -> written verbatim (relative paths only; a generic escape hatch)
+#
+#   agentainer up   -c examples/mcp-configured.yaml
+#   agentainer send -c examples/mcp-configured.yaml --to lead "Audit the repo."
+#
+# See docs/configuration.md ("Per-agent coding-agent config") for the full model.
+# =============================================================================
+
+swarm:
+  name: mcp-configured
+  root: ./mcp-workspace
+
+defaults:
+  can_talk_to: []
+
+agents:
+  - name: lead
+    type: claude
+    can_talk_to: "*"
+    command: "claude --dangerously-skip-permissions"
+    role: "You are the lead. Take the user's task and delegate to the auditor."
+    # A standing project-context file (becomes CLAUDE.md in the workdir).
+    context: |
+      # Project context
+      This repo is a Python service. Prefer stdlib. Every change needs a test.
+      Ask the auditor before merging anything risky.
+    # MCP servers this agent can call (merged into .mcp.json; add your own token).
+    mcp:
+      filesystem:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    # CLI settings merged into .claude/settings.json (the Stop/SessionStart hooks
+    # Agentainer installs there are preserved).
+    settings:
+      permissions:
+        defaultMode: acceptEdits
+
+  - name: auditor
+    type: claude
+    can_talk_to: [lead]
+    command: "claude --dangerously-skip-permissions"
+    context: |
+      You are the security auditor. Be skeptical; flag anything that touches
+      secrets, auth, or the filesystem.
+    # Claude skills: point at local directories; each is copied into
+    # .claude/skills/<dir-name>/. (Create ./skills/secrets-scan/SKILL.md first.)
+    skills:
+      - ./skills/secrets-scan
+    # Arbitrary extra files dropped into the workdir (relative paths only).
+    files:
+      REVIEW-CHECKLIST.md: |
+        - [ ] no hard-coded secrets
+        - [ ] input validated
+        - [ ] errors handled

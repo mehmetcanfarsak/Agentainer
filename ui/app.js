@@ -359,6 +359,7 @@
             <div class="acts">
               <button class="btn ghost sm" data-upall="${esc(s.name)}" data-tip="Start every stopped agent in this swarm and its supervisor.">▶ Start all</button>
               <button class="btn ghost sm" data-downall="${esc(s.name)}" data-tip="Stop every running agent in this swarm.">■ Stop all</button>
+              <button class="btn ghost sm" data-reset="${esc(s.name)}" data-tip="Start over: clear this swarm's data (or fully wipe its work files). Requires it to be stopped.">↺ Reset</button>
               <button class="btn sm" data-open2="${esc(s.name)}">Open →</button>
             </div>
           </div>`;
@@ -381,10 +382,11 @@
       nc.onclick = startCreate;
       nc.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); startCreate(); } };
       for (const c of box.querySelectorAll(".swarmcard.clickable"))
-        c.onclick = (e) => { if (e.target.closest("[data-upall],[data-downall],[data-open2]")) return; openSwarm(c.dataset.open); };
+        c.onclick = (e) => { if (e.target.closest("[data-upall],[data-downall],[data-reset],[data-open2]")) return; openSwarm(c.dataset.open); };
       for (const b of box.querySelectorAll("[data-open2]")) b.onclick = () => openSwarm(b.dataset.open2);
       for (const b of box.querySelectorAll("[data-upall]")) b.onclick = () => swarmLifecycle("up", b.dataset.upall, b);
       for (const b of box.querySelectorAll("[data-downall]")) b.onclick = () => swarmLifecycle("down", b.dataset.downall, b);
+      for (const b of box.querySelectorAll("[data-reset]")) b.onclick = () => openResetModal(b.dataset.reset);
       timers.dash = setInterval(() => { if (state.view === "dashboard") refreshDashboardStats(); }, 5000);
     }).catch((e) => banner(e.message));
   }
@@ -413,6 +415,69 @@
       toast(kind === "up" ? `started ${n} agent(s) in ${name}` : `stopped ${name}`);
       setTimeout(refreshDashboardStats, 700);
     });
+  }
+
+  // ---- reset / start-over modal -----------------------------------------
+
+  function openResetModal(name) {
+    const modal = el(`
+      <div class="modal-back"><div class="card modal">
+        <h3>Start over — ${esc(name)}</h3>
+        <p class="muted" style="margin:.2rem 0 .9rem">The swarm must be stopped first (Stop all). The config file is always kept.</p>
+        <label class="resetopt" style="display:block;margin-bottom:.6rem;cursor:pointer">
+          <input type="radio" name="resetlvl" value="state" checked/>
+          <b>Reset state</b> — clear conversations, mail, queue &amp; logs.
+          <span class="muted">Keeps the agents' work files; next start begins fresh conversations.</span>
+        </label>
+        <label class="resetopt" style="display:block;margin-bottom:.6rem;cursor:pointer">
+          <input type="radio" name="resetlvl" value="full"/>
+          <b style="color:var(--no-fg)">Wipe everything</b> — also delete the agents' workspace files (source/output).
+          <span class="muted">Destructive and irreversible.</span>
+        </label>
+        <div class="fld" id="confirmWrap" style="display:none;margin:.2rem 0 .8rem">
+          <label>Type the swarm name <b>${esc(name)}</b> to confirm the wipe</label>
+          <input class="field" id="resetConfirm" placeholder="${esc(name)}" autocomplete="off"/>
+        </div>
+        <div class="rowend">
+          <button class="btn ghost" id="resetCancel">Cancel</button>
+          <button class="btn danger" id="resetGo">Reset state</button>
+        </div>
+      </div></div>`);
+    $("modalRoot").appendChild(modal);
+    const close = () => modal.remove();
+    const goBtn = modal.querySelector("#resetGo");
+    const confirmWrap = modal.querySelector("#confirmWrap");
+    const confirmInput = modal.querySelector("#resetConfirm");
+    const level = () => modal.querySelector('input[name="resetlvl"]:checked').value;
+    function sync() {
+      const full = level() === "full";
+      confirmWrap.style.display = full ? "" : "none";
+      goBtn.textContent = full ? "Wipe everything" : "Reset state";
+      goBtn.classList.toggle("danger", true);
+      goBtn.disabled = full && confirmInput.value.trim() !== name;
+    }
+    modal.querySelectorAll('input[name="resetlvl"]').forEach((r) => (r.onchange = sync));
+    confirmInput.oninput = sync;
+    modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
+    modal.querySelector("#resetCancel").onclick = close;
+    goBtn.onclick = () => {
+      const lvl = level();
+      goBtn.disabled = true;
+      apiPost("/api/swarms/reset", { name, level: lvl }).then((res) => {
+        if (!res.ok) {
+          // 409 = agents still running; keep the modal open so the user can act.
+          toast("reset failed: " + (res.j.error || "error"));
+          goBtn.disabled = false;
+          return;
+        }
+        close();
+        const n = (res.j.removed || []).length;
+        toast(lvl === "full" ? `wiped ${name} (${n} path(s))` : `reset ${name} (${n} path(s))`);
+        (res.j.warnings || []).forEach((w) => toast("⚠️ " + w));
+        setTimeout(refreshDashboardStats, 700);
+      });
+    };
+    sync();
   }
 
   // ---- create flow -------------------------------------------------------
@@ -1650,6 +1715,14 @@
           <div id="f_pings"></div>
           <button class="btn ghost sm" id="f_addping" type="button">+ Add schedule</button>${infoIcon("Add a cron-scheduled ping: a message sent on a schedule.")}
         </div>
+        <details class="fld" style="margin-top:.6rem" ${agentHasConfig(a) ? "open" : ""}>
+          <summary style="cursor:pointer;font-weight:650">Coding-agent config ${infoIcon("MCP servers, a context file (CLAUDE.md/AGENTS.md/GEMINI.md by type), Claude skills, CLI settings, and extra files — materialised into the agent's workdir on (re)start.")}</summary>
+          <div class="fld" style="margin-top:.5rem"><label>Context file (CLAUDE.md / AGENTS.md / GEMINI.md by type)</label><textarea class="field" id="f_context" rows="3" placeholder="Standing project context for this agent…">${esc(a.context || "")}</textarea></div>
+          <div class="fld" style="margin-top:.5rem"><label>MCP servers (JSON) ${infoIcon('e.g. {"github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"]}}')}</label><textarea class="field code" id="f_mcp" rows="3" placeholder='{"github": {"command": "npx", "args": ["-y", "server"]}}'>${esc(jsonPretty(a.mcp))}</textarea></div>
+          <div class="fld" style="margin-top:.5rem"><label>Settings (JSON) ${infoIcon("Merged into the CLI settings file (claude: .claude/settings.json).")}</label><textarea class="field code" id="f_settings" rows="2" placeholder='{"model": "opus"}'>${esc(jsonPretty(a.settings))}</textarea></div>
+          <div class="fld" style="margin-top:.5rem"><label>Skills (one directory per line — claude)</label><textarea class="field code" id="f_skills" rows="2" placeholder="./skills/pytest">${esc((a.skills || []).join("\n"))}</textarea></div>
+          <div class="fld" style="margin-top:.5rem"><label>Extra files (JSON: relative path → content)</label><textarea class="field code" id="f_files" rows="2" placeholder='{"docs/NOTES.md": "..."}'>${esc(jsonPretty(a.files))}</textarea></div>
+        </details>
         <div class="rowend">
           <button class="btn ghost" id="f_cancel">Cancel</button>
           <button class="btn" id="f_save">${editing ? "Save" : "Add agent"}</button>${infoIcon("Validate and create or update the agent, then start its session. A type/command mismatch is rejected.")}
@@ -1704,6 +1777,28 @@
     if (raw === "*") return "*";
     return raw.split(",").map((s) => s.trim()).filter(Boolean);
   }
+  function jsonPretty(o) {
+    return o && typeof o === "object" && Object.keys(o).length ? JSON.stringify(o, null, 2) : "";
+  }
+  function agentHasConfig(a) {
+    return !!(a.context || (a.skills && a.skills.length) ||
+      (a.mcp && Object.keys(a.mcp).length) || (a.settings && Object.keys(a.settings).length) ||
+      (a.files && Object.keys(a.files).length));
+  }
+  // Parse a JSON-object textarea; returns {ok, value} or {ok:false} after toasting.
+  function parseJsonField(id, label) {
+    const raw = (document.getElementById(id).value || "").trim();
+    if (!raw) return { ok: true, value: undefined };
+    try {
+      const v = JSON.parse(raw);
+      if (v === null || typeof v !== "object" || Array.isArray(v)) throw new Error("not an object");
+      return { ok: true, value: v };
+    } catch (e) {
+      toast(label + ": invalid JSON");
+      return { ok: false };
+    }
+  }
+
   function saveAgentForm(editing, name, close) {
     const g = (id) => document.getElementById(id).value;
     const payload = {
@@ -1716,6 +1811,19 @@
     };
     const workdir = g("f_workdir").trim();
     if (workdir) payload.workdir = workdir;
+    // Coding-agent config: context (text), skills (lines), mcp/settings/files (JSON).
+    // Included only when non-empty so an unrelated edit never injects empty blocks.
+    const mcp = parseJsonField("f_mcp", "MCP servers");
+    const settings = parseJsonField("f_settings", "Settings");
+    const files = parseJsonField("f_files", "Extra files");
+    if (!mcp.ok || !settings.ok || !files.ok) return;
+    const ctx = g("f_context").trim();
+    const skills = g("f_skills").split("\n").map((s) => s.trim()).filter(Boolean);
+    if (ctx) payload.context = g("f_context");
+    if (skills.length) payload.skills = skills;
+    if (mcp.value) payload.mcp = mcp.value;
+    if (settings.value) payload.settings = settings.value;
+    if (files.value) payload.files = files.value;
     let req;
     if (editing) {
       req = apiPost("/api/agent/edit" + swq(), { name, fields: payload });

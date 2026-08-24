@@ -17,7 +17,7 @@ external runtime dependency; `node` is only needed for the npm bin wrapper.
 - UI / control plane: [`serve`](#serve) · [`mcp`](#mcp)
 - Dynamic reconcile (P4): [`add`](#add) · [`remove`](#remove) ·
   [`edit`](#edit) · [`reconcile`](#reconcile)
-- Lifecycle / state: [`remove-session`](#remove-session)
+- Lifecycle / state: [`remove-session`](#remove-session), [`reset`](#reset)
 - Internal (not for direct use): [`hook`](#hook) · [`watch`](#watch) ·
   [`supervise`](#supervise)
 
@@ -516,6 +516,41 @@ It never touches the agent workspaces' own files (source code) or the config.
 agentainer down -c my-swarm.yaml
 agentainer remove-session -c my-swarm.yaml
 ```
+
+---
+
+## `reset`
+
+**Purpose:** Start a swarm over. Two levels — a soft **reset** (the default,
+identical to `remove-session`) and a hard **`--full`** wipe that *also* deletes the
+agents' workspace files.
+
+```
+agentainer reset [--full] [-c <config>]
+```
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--full` | off | Also delete each agent's workspace directory (their produced work / source) and recreate it empty. The config file is **always** kept. |
+
+- **`reset`** (no flag): clears Agentainer's own state — conversations, mail,
+  queue, logs — but keeps the agents' work files. Same effect as `remove-session`.
+- **`reset --full`**: everything above **plus** the agents' workspace files, for a
+  truly blank swarm. Destructive and irreversible. A workspace that *contains the
+  config file* is skipped (with a warning) so the swarm's own `agentainer.yaml` can
+  never be destroyed.
+
+Both levels **refuse while any agent or the supervisor is running** — `down` first.
+
+```bash
+agentainer down  -c my-swarm.yaml
+agentainer reset -c my-swarm.yaml            # soft: fresh conversations, work kept
+agentainer reset -c my-swarm.yaml --full     # hard: also delete work files
+```
+
+Available on all four control planes: the UI swarm-card **Reset** button (a hard
+wipe requires typing the swarm name), Telegram `/reset [full]`, and the MCP
+`reset_swarm` tool.
 
 ---
 

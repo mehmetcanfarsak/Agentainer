@@ -61,6 +61,7 @@ import mail  # noqa: E402
 import tmux  # noqa: E402
 import turn  # noqa: E402
 import reconcile  # noqa: E402
+import reset as resetmod  # noqa: E402
 
 
 API_ROOT = "https://api.telegram.org"
@@ -444,6 +445,7 @@ HELP = (
     "/down [agent] — stop all / one\n"
     "/restart [agent] — restart all / one\n"
     "/reconcile — make running set match the config\n"
+    "/reset [full] — start over: clear state (soft) or also delete work files (full)\n"
     "\n"
     "Mail & user:\n"
     "/to <agent> <msg> — send mail as the user (or reply to a mirrored message)\n"
@@ -800,6 +802,23 @@ def _cmd_apply(cfg, arg):
     return f"📦 applied {name}: {', '.join(added)}"
 
 
+def _cmd_reset(cfg, arg):
+    """``/reset`` (soft) or ``/reset full`` (hard wipe). Refuses while agents run."""
+    level = "full" if arg.strip().lower() == "full" else "state"
+    try:
+        resetmod.guard_stopped(cfg)
+        result = resetmod.reset(cfg, level)
+    except resetmod.ResetError as exc:
+        raise TelegramError(str(exc))
+    n = len(result["removed"])
+    label = "🧹 full wipe" if level == "full" else "🧹 reset"
+    lines = [f"{label}: removed {n} path(s)" + (" — swarm is clean" if not n else "")]
+    lines.extend(f"⚠️ {w}" for w in result["warnings"])
+    if level == "state":
+        lines.append("work files kept; next /up starts fresh conversations")
+    return "\n".join(lines)
+
+
 def _cmd_help(cfg, arg):
     return HELP
 
@@ -815,6 +834,7 @@ _COMMANDS = {
     "add": _cmd_add, "edit": _cmd_edit, "remove": _cmd_remove,
     "set": _cmd_set, "mirror": _cmd_mirror,
     "templates": _cmd_templates, "apply": _cmd_apply,
+    "reset": _cmd_reset,
 }
 
 
