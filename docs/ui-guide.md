@@ -118,7 +118,12 @@ Everything below is served by `lib/ui.py` and driven by the single-page app.
 root, whether the `user` mailbox is available, and whether the liveness
 supervisor is alive. For each agent it reports:
 
-- **`running`** — is its tmux session up?
+- **`running`** — is the agent's CLI actually alive? (its tmux session exists
+  **and** the launch wrapper's exit sentinel is absent — a session whose CLI has
+  exited into the fallback shell reads as `exited`, not running)
+- **`state`** — the collapsed status: `working` / `waiting` / `attention` /
+  `stalled` / `exited` (session alive but the CLI has crashed/quit — one-click
+  **Restart** to relaunch) / `stopped` (no session)
 - **`busy`** — is a turn in flight right now? (from `turn.busy_info`)
 - **`queue_depth`** — messages waiting to be released into its inbox
 - **`unread`** — messages currently sitting in its inbox
@@ -162,11 +167,20 @@ Two distinct write paths, deliberately separate:
   `mail.send_as_user` — it delivers as the virtual **`user`** mailbox and goes
   through the *normal* mailroom (routing, queueing, nudge). This is what the
   reply box in a thread does. Correctness is unchanged from a CLI `user send`.
-- **Direct pane input (raw).** `POST /api/type` with `{"agent","text"}` pastes
-  straight into the agent's tmux pane (`tmux.paste_into`), **bypassing the
-  mailroom entirely**. `POST /api/key` with `{"agent","key"}` sends a single
-  key (`Escape`, `C-c`, …). These are power-user escape hatches — use them to
-  unstick a modal or interrupt a runaway turn, not for normal messaging.
+- **Direct pane input (raw).** `POST /api/type` with `{"agent","text"}` types
+  straight into the agent's tmux pane (`mail.type_into_pane`), **bypassing the
+  mailroom entirely**. If the agent is **mid-turn**, the text is *staged* rather
+  than typed — a coding-agent CLI buffers text typed while it's busy but swallows
+  the submit Enter, so the input would otherwise sit unsent in the box and never
+  reach the model. Staged input is pasted + submitted by the liveness supervisor
+  the instant the turn ends (it takes priority over queued mail), and the
+  response reports `{"staged": true}` so the UI shows *"queued — sends when the
+  turn ends."* When the agent is idle it's submitted immediately. `POST /api/key`
+  with `{"agent","key"}` sends a single key (`Escape`, `C-c`, …). These are
+  power-user escape hatches — use them to unstick a modal or interrupt a runaway
+  turn, not for normal messaging. *(Staging needs a running
+  `serve`/`supervise` heartbeat to flush; without one, idle submission still
+  works but busy-staged input waits for the next start.)*
 
 ### The user mailbox + availability toggle
 

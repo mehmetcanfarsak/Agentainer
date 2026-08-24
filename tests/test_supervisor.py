@@ -25,6 +25,7 @@ def p():
     """Monkeypatch every external primitive supervise_once touches per agent."""
     rec = {
         "session": {},   # name -> session exists?
+        "exited": {},    # name -> agent_exited (zombie fallback shell)?
         "busy": {},      # name -> busy_info return (state dict or None)
         "health": {},    # name -> health_probe return dict
         "state": {},     # name -> turn_state dict
@@ -33,6 +34,8 @@ def p():
         "process": 0,    # process_read_folder call count
         "release": {},   # name -> present_current return (mail was present-able)
         "present": [],   # present_current args
+        "flush": {},     # name -> flush_staged_input return
+        "flushcalls": [],  # flush_staged_input args
         "nudge": [],     # nudge args
         "ping": [],      # maybe_ping args
     }
@@ -40,6 +43,9 @@ def p():
     def _session_exists(session):
         name = session.split("t-", 1)[-1] if session.startswith("t-") else session
         return rec["session"].get(name, True)
+
+    def _agent_exited(session, name):
+        return rec["exited"].get(name, False)
 
     def _turn_state(cfg, name):
         return rec["state"].get(name, {"delivered": 0, "completed": 0, "since": 0, "by": None})
@@ -73,6 +79,10 @@ def p():
         rec["present"].append(name)
         return rec["release"].get(name, False)
 
+    def _flush(cfg, name):
+        rec["flushcalls"].append(name)
+        return rec["flush"].get(name, False)
+
     def _nudge(cfg, name):
         rec["nudge"].append(name)
         return True
@@ -91,9 +101,11 @@ def p():
          mock.patch.object(supervisor.mail, "process_read_folder", _process), \
          mock.patch.object(supervisor.mail, "release_next", _release), \
          mock.patch.object(supervisor.mail, "present_current", _present), \
+         mock.patch.object(supervisor.mail, "flush_staged_input", _flush), \
          mock.patch.object(supervisor.mail, "nudge", _nudge), \
          mock.patch.object(supervisor.mail, "maybe_ping", _ping), \
          mock.patch.object(supervisor.tmux, "session_exists", _session_exists), \
+         mock.patch.object(supervisor.tmux, "agent_exited", _agent_exited), \
          mock.patch.object(supervisor.log, "log_event", _log):
         yield rec
 
@@ -136,6 +148,38 @@ def test_supervise_idle_pings_when_inbox_empty(tmp_path, p):
     assert p["ping"] == ["A"]
 
 
+def test_supervise_idle_flushes_staged_input_over_mail(tmp_path, p):
+    # Operator input staged while the agent was busy is submitted the moment it
+    # idles; that wins over queued mail and ends the tick (continue) so the
+    # freshly-submitted turn is not clobbered by a nudge.
+    cfg = _cfg(tmp_path, "  - name: A\n    type: claude\n    command: 'true'\n")
+    p["session"]["A"] = True
+    p["flush"]["A"] = True    # a staged line was submitted
+    p["release"]["A"] = True  # there is also mail, but flush short-circuits the tick
+    supervisor.supervise_once(cfg, ["A"], set())
+    assert p["flushcalls"] == ["A"]
+    assert p["present"] == []  # continue skipped present_current
+    assert p["ping"] == []
+
+
+def test_supervise_busy_pings_but_does_not_deliver(tmp_path, p):
+    # A busy agent must not get mail delivered/nudged, but maybe_ping must still
+    # run so a when_busy="queue" rule can enqueue mid-turn (regression: maybe_ping
+    # used to sit inside the idle-only branch, making when_busy="queue" dead).
+    cfg = _cfg(tmp_path, "  - name: A\n    type: claude\n    command: 'true'\n")
+    p["session"]["A"] = True
+    cfg.busy_timeout_ms = 900000
+    p["state"]["A"] = {
+        "delivered": 1, "completed": 0,
+        "since": __import__("time").time(), "by": "lead",
+    }
+    p["busy"]["A"] = {"delivered": 1, "completed": 0, "since": 0, "by": "lead"}
+    supervisor.supervise_once(cfg, ["A"], set())
+    assert p["flushcalls"] == []   # no staged flush into a busy pane
+    assert p["present"] == []      # no delivery
+    assert p["ping"] == ["A"]      # ping engine still consulted
+
+
 # --------------------------------------------------------------------------
 # supervise_once: stale-busy
 # --------------------------------------------------------------------------
@@ -166,9 +210,12 @@ def test_supervise_ignores_freshly_busy(tmp_path, p):
     p["busy"]["A"] = {"delivered": 1, "completed": 0, "since": 0, "by": "lead", "age_s": 0}
     supervisor.supervise_once(cfg, ["A"], set())
     assert p["mark"] == []
-    assert p["process"] == 0
+    assert p["process"] == 0    # no read-folder sweep while busy
+    assert p["present"] == []   # no mail release/nudge while busy
     assert p["nudge"] == []
-    assert p["ping"] == []
+    # maybe_ping IS still called while busy -- it only ENQUEUES, so a
+    # when_busy="queue" rule can come due mid-turn (it's the only place it can).
+    assert p["ping"] == ["A"]
 
 
 # --------------------------------------------------------------------------
@@ -189,6 +236,26 @@ def test_supervise_handles_dead_session_and_logs_once(tmp_path, p):
     supervisor.supervise_once(cfg, ["A"], seen)
     assert p["log"].count(("A", "dead")) == 1
     assert p["mark"] == ["A"]
+
+
+def test_supervise_handles_exited_zombie_shell(tmp_path, p):
+    cfg = _cfg(tmp_path, "  - name: A\n    type: claude\n    command: 'true'\n")
+    p["session"]["A"] = True   # tmux session still alive...
+    p["exited"]["A"] = True    # ...but the CLI exited into a fallback shell
+    seen: set[str] = set()
+    supervisor.supervise_once(cfg, ["A"], seen)
+    # Logged distinctly as "exited", reconciled the turn, and -- crucially --
+    # did NOT paste any mail/nudge into the bare shell.
+    assert ("A", "exited") in p["log"]
+    assert ("A", "dead") not in p["log"]
+    assert p["mark"] == ["A"]
+    assert p["process"] == 0
+    assert p["present"] == []
+    assert p["nudge"] == []
+    assert p["ping"] == []
+    # Warned once per transition.
+    supervisor.supervise_once(cfg, ["A"], seen)
+    assert p["log"].count(("A", "exited")) == 1
 
 
 def test_supervise_resurrected_agent_clears_seen_dead(tmp_path, p):
@@ -319,6 +386,49 @@ def test_supervisor_alive_true_and_false(tmp_path):
     # No pid file -> not alive.
     (cfg.run_dir / "supervisor.pid").unlink()
     assert supervisor.supervisor_alive(cfg) is False
+
+
+# --------------------------------------------------------------------------
+# ensure_supervisor: every "start" surface (UI buttons / MCP / Telegram) must
+# get the same heartbeat up_config gives the CLI/dashboard path.
+# --------------------------------------------------------------------------
+
+
+def test_ensure_supervisor_starts_when_running_and_none_alive(tmp_path):
+    cfg = _cfg(tmp_path, "  - name: A\n    type: claude\n    command: 'true'\n")
+    calls = {}
+    with mock.patch.object(supervisor.tmux, "session_exists", lambda s: True), \
+         mock.patch.object(supervisor, "supervisor_alive", lambda c: False), \
+         mock.patch.object(supervisor, "start_supervisor",
+                           lambda c, names: calls.setdefault("names", names)):
+        assert supervisor.ensure_supervisor(cfg) is True
+    assert calls["names"] == ["A"]  # watches the agents running now
+
+
+def test_ensure_supervisor_noop_when_supervise_disabled(tmp_path):
+    cfg = _cfg(tmp_path, "  - name: A\n    type: claude\n    command: 'true'\n")
+    cfg.supervise = False
+    with mock.patch.object(supervisor, "start_supervisor",
+                           side_effect=AssertionError("must not start")):
+        assert supervisor.ensure_supervisor(cfg) is False
+
+
+def test_ensure_supervisor_noop_when_already_alive(tmp_path):
+    cfg = _cfg(tmp_path, "  - name: A\n    type: claude\n    command: 'true'\n")
+    with mock.patch.object(supervisor, "supervisor_alive", lambda c: True), \
+         mock.patch.object(supervisor, "start_supervisor",
+                           side_effect=AssertionError("must not double-start")):
+        assert supervisor.ensure_supervisor(cfg) is False
+
+
+def test_ensure_supervisor_noop_when_nothing_running(tmp_path):
+    # No session is up yet -> never spawn a watcher with an empty watch-set.
+    cfg = _cfg(tmp_path, "  - name: A\n    type: claude\n    command: 'true'\n")
+    with mock.patch.object(supervisor.tmux, "session_exists", lambda s: False), \
+         mock.patch.object(supervisor, "supervisor_alive", lambda c: False), \
+         mock.patch.object(supervisor, "start_supervisor",
+                           side_effect=AssertionError("must not start empty")):
+        assert supervisor.ensure_supervisor(cfg) is False
 
 
 # --------------------------------------------------------------------------

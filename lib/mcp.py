@@ -174,7 +174,7 @@ def _agent_prop() -> dict:
 def _t_list_swarms(swarms, args):
     out = []
     for cfg in swarms.values():
-        running = sum(1 for a in cfg.agents if tmux.session_exists(a.session))
+        running = sum(1 for a in cfg.agents if tmux.agent_running(a))
         out.append(
             {
                 "name": cfg.name,
@@ -198,13 +198,16 @@ def _t_swarm_status(swarms, args):
     cfg = _resolve(swarms, args.get("swarm"))
     agents = []
     for a in cfg.agents:
-        running = tmux.session_exists(a.session)
-        busy = turn.busy_info(cfg, a) is not None
+        alive = tmux.session_exists(a.session)
+        exited = alive and tmux.agent_exited(a.session, a.name)
+        running = alive and not exited
+        busy = running and turn.busy_info(cfg, a) is not None
         agents.append(
             {
                 "name": a.name,
                 "type": a.type,
                 "running": running,
+                "exited": exited,
                 "busy": busy,
                 "unread": _count_files(cfg.mail_paths(a).inbox),
                 "queue_depth": _count_files(cfg.queue_dir / a.name),

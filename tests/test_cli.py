@@ -623,6 +623,16 @@ def test_status_down(monkeypatch, tmp_path):
         assert cli.main(["status", "-c", str(cfg.path)]) == 0
 
 
+def test_status_exited(monkeypatch, tmp_path, capsys):
+    # Session alive but the pane shows the exit sentinel -> "exited", not "up".
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    monkeypatch.delitem(sys.modules, "supervisor", raising=False)
+    with mock_tmux(has_session=True, pane="[agentainer] agent orchestrator exited (status 0)"):
+        assert cli.main(["status", "-c", str(cfg.path)]) == 0
+    out = capsys.readouterr().out
+    assert "orchestrator" in out and "exited" in out
+
+
 def test_status_unknown_agent(monkeypatch, tmp_path):
     cfg = build(tmp_path, GENERAL_AGENTS)
     with mock_tmux(has_session=False):
@@ -939,6 +949,36 @@ def test_hook_claude_bad_json(monkeypatch, tmp_path):
     _hook_env(monkeypatch, cfg, "orchestrator")
     with mock.patch.object(cli.sys, "stdin", io.StringIO("not json")):
         assert cli.main(["hook", "claude"]) == 0
+
+
+def test_hook_claude_sessionstart_compact_presents(monkeypatch, tmp_path):
+    # A compaction wiped the nudge from context -> re-present the inbox message.
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    _hook_env(monkeypatch, cfg, "orchestrator")
+    with mock.patch.object(cli.sys, "stdin", io.StringIO('{"source": "compact"}')), \
+         mock.patch.object(cli.mail, "present_current") as pc:
+        assert cli.main(["hook", "claude", "--event", "sessionstart"]) == 0
+    pc.assert_called_once()
+    assert pc.call_args[0][1] == "orchestrator"
+
+
+def test_hook_claude_sessionstart_startup_is_noop(monkeypatch, tmp_path):
+    # `startup` must NOT re-present -- the launch flow already sent the first prompt.
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    _hook_env(monkeypatch, cfg, "orchestrator")
+    with mock.patch.object(cli.sys, "stdin", io.StringIO('{"source": "startup"}')), \
+         mock.patch.object(cli.mail, "present_current") as pc:
+        assert cli.main(["hook", "claude", "--event", "sessionstart"]) == 0
+    pc.assert_not_called()
+
+
+def test_hook_claude_sessionstart_bad_json_is_noop(monkeypatch, tmp_path):
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    _hook_env(monkeypatch, cfg, "orchestrator")
+    with mock.patch.object(cli.sys, "stdin", io.StringIO("not json")), \
+         mock.patch.object(cli.mail, "present_current") as pc:
+        assert cli.main(["hook", "claude", "--event", "sessionstart"]) == 0
+    pc.assert_not_called()
 
 
 def test_hook_codex_not_complete(monkeypatch, tmp_path):

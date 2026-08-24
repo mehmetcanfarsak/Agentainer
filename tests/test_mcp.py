@@ -219,6 +219,21 @@ def test_swarm_status(cfg, swarms, monkeypatch):
     assert by["bob"]["busy"] is False
 
 
+def test_swarm_status_reports_exited(cfg, swarms):
+    # alice's pane shows the exit sentinel -> exited/not-running; bob stays up.
+    pane = "[agentainer] agent alice exited (status 0)"
+    with mock_tmux(has_session=True, pane=pane):
+        out = _payload(_call("swarm_status", {"swarm": "demo"}, swarms=swarms))
+        row = _payload(_call("list_swarms", swarms=swarms))["swarms"][0]
+    by = {ag["name"]: ag for ag in out["agents"]}
+    assert by["alice"]["running"] is False
+    assert by["alice"]["exited"] is True
+    assert by["alice"]["busy"] is False
+    assert by["bob"]["running"] is True
+    assert by["bob"]["exited"] is False
+    assert row["running"] == 1  # zombie excluded from the machine-wide count
+
+
 def test_read_inbox_empty(swarms):
     out = _payload(_call("read_inbox", {"agent": "alice"}, swarms=swarms))
     assert out == {"agent": "alice", "inbox": []}

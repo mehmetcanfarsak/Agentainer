@@ -756,26 +756,33 @@
 
   // ---- agents overview (per-swarm) ---------------------------------------
 
-  const STATE_LABEL = { working: "working", waiting: "waiting", attention: "needs you", stalled: "stalled", stopped: "stopped" };
+  const STATE_LABEL = { working: "working", waiting: "waiting", attention: "needs you", stalled: "stalled", stopped: "stopped", exited: "exited" };
   const STATE_TIP = {
     working: "This agent is actively running a turn right now.",
     waiting: "The agent is up but idle, waiting for its next message.",
     attention: "The agent has finished and is waiting on your reply.",
     stalled: "Busy past its timeout so its turn-completion signal was likely lost; use Esc or Restart to recover.",
     stopped: "No tmux session; the agent is not processing mail. Start it to bring it online.",
+    exited: "The tmux session is alive but the agent's CLI has exited (crashed or quit) into a fallback shell — it is not processing mail. Restart to relaunch it.",
   };
 
   function statusPills(a) {
     const s = a.state || (a.running ? (a.busy ? "working" : "waiting") : "stopped");
+    const exited = s === "exited";
     let label = STATE_LABEL[s] || s;
     if (s === "working" && a.working_s) label = "working " + fmtDur(a.working_s);
     const dot = s === "working" ? '<span class="dotpulse"></span>' : "";
     const stp = `<span class="pill st-${s}" data-tip="${esc(STATE_TIP[s] || STATE_LABEL[s] || s)}">${dot}${esc(label)}</span>`;
     const un = a.unread ? `<span class="pill busy" data-tip="Unread messages in this agent's inbox, waiting to be read and processed.">${a.unread} unread</span>` : "";
     const q = a.queue_depth ? `<span class="pill mute" data-tip="Messages held in the orchestrator queue for this agent; the inbox releases them one at a time.">${a.queue_depth} queued</span>` : "";
+    // An exited agent still owns a live (zombie) tmux session, so a plain Start
+    // would no-op (start_one sees the session and skips) -- offer Restart, which
+    // kills the fallback shell then relaunches the CLI.
     const act = a.running
       ? `<button class="pill downbtn" data-down="${esc(a.name)}">■ Stop</button>${infoIcon("Kill this agent's tmux session and any in-flight turn. Config is untouched.")}`
-      : `<button class="pill upbtn" data-up="${esc(a.name)}">▶ Start</button>${infoIcon("Launch this agent's tmux session and run its CLI from the config; it begins reading mail.")}`;
+      : exited
+        ? `<button class="pill recover" data-restart="${esc(a.name)}">↻ Restart</button>${infoIcon("The CLI exited but its tmux session lingers; this kills that session and relaunches the agent from the config.")}`
+        : `<button class="pill upbtn" data-up="${esc(a.name)}">▶ Start</button>${infoIcon("Launch this agent's tmux session and run its CLI from the config; it begins reading mail.")}`;
     const compact = a.running
       ? `<button class="pill compactbtn" data-compact="${esc(a.name)}">⊟ Context Compact</button>${infoIcon("Type /compact into this agent's live session and press Enter, asking its CLI to compact its context window. Bypasses mail.")}`
       : "";
@@ -1443,8 +1450,9 @@
           <div class="info2">
             <b>${esc(a.name)}</b> <span class="muted">${esc(a.type || "claude")}</span>
             <div class="muted" style="font-size:.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">talks to: ${esc(fmtCanTalk(a.can_talk_to))}</div>
+            ${pingSummary(a)}
           </div>
-          <button class="btn ghost sm" data-edit="${esc(a.name)}">Edit</button>${infoIcon("Edit this agent; its name is locked since renaming would orphan its mailbox folders.")}
+          <button class="btn ghost sm" data-edit="${esc(a.name)}">Edit</button>${infoIcon("Edit this agent (including its scheduled pings); its name is locked since renaming would orphan its mailbox folders.")}
           <button class="btn danger sm" data-del="${esc(a.name)}">Delete</button>${infoIcon("Stop this agent's session and remove it from the config. Irreversible.")}
         </div>`).join("");
       $("view").innerHTML = `
@@ -1654,6 +1662,16 @@
     modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
     modal.querySelector("#f_cancel").onclick = close;
     modal.querySelector("#f_save").onclick = () => saveAgentForm(editing, name, close);
+  }
+
+  // Compact "⏰ N schedules" line so cron pings are visible in the swarm details
+  // (they're edited in the agent's Edit modal). Hidden when the agent has none.
+  function pingSummary(a) {
+    const pings = (a.pings || []).filter((p) => p && (p.cron || p.message));
+    if (!pings.length) return "";
+    const crons = pings.map((p) => p.cron || "?").join(" · ");
+    const tip = pings.map((p) => `${p.cron || "?"} — ${p.message || "(no message)"}${p.when_busy === "queue" ? " [queue]" : ""}`).join("\n");
+    return `<div class="muted" style="font-size:.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" data-tip="${esc(tip)}">⏰ ${pings.length} ping schedule${pings.length > 1 ? "s" : ""}: ${esc(crons)}</div>`;
   }
 
   const BUSY_OPTS = ["skip", "queue"];

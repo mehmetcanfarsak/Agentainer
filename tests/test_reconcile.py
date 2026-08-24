@@ -6,6 +6,7 @@ path is validated both via PyYAML (when present) and the stdlib ``minyaml``
 fallback, because the no-PyYAML path is a release invariant.
 """
 
+import sys
 from types import SimpleNamespace
 from unittest import mock
 from pathlib import Path
@@ -231,6 +232,41 @@ def test_start_all_default_start_fn(tmp_path):
         out = reconcile.start_all(cfg)
     assert sorted(out) == ["alice", "bob"]
     assert sorted(launched) == ["alice", "bob"]
+
+
+def test_start_all_ensures_supervisor_only_when_something_started(tmp_path):
+    # The UI Start-all / MCP up_swarm / Telegram /up path must get a heartbeat.
+    cfg = load_swarm(tmp_path, AGENTS)
+    calls = []
+    with mock.patch.object(reconcile, "_ensure_supervisor", lambda c: calls.append(c)):
+        # something to start -> ensure the supervisor
+        with mock.patch.object(tmuxmod, "session_exists", return_value=False):
+            reconcile.start_all(cfg, _start_fn=lambda c, a, r: None)
+        assert len(calls) == 1
+        # nothing to start (all already running) -> do not touch the supervisor
+        with mock.patch.object(tmuxmod, "session_exists", return_value=True):
+            reconcile.start_all(cfg, _start_fn=lambda c, a, r: None)
+        assert len(calls) == 1
+
+
+def test_start_one_ensures_supervisor(tmp_path):
+    cfg = load_swarm(tmp_path, AGENTS)
+    calls = []
+    with mock.patch.object(reconcile, "_ensure_supervisor", lambda c: calls.append(c)):
+        with mock.patch.object(tmuxmod, "session_exists", return_value=False):
+            assert reconcile.start_one(cfg, "alice", _start_fn=lambda c, a, r: None) is True
+        assert len(calls) == 1
+        # already running -> no start, no supervisor touch
+        with mock.patch.object(tmuxmod, "session_exists", return_value=True):
+            assert reconcile.start_one(cfg, "alice", _start_fn=lambda c, a, r: None) is False
+        assert len(calls) == 1
+
+
+def test_reconcile_ensure_supervisor_tolerates_missing_module(tmp_path):
+    # _ensure_supervisor must never raise even if the supervisor import fails.
+    cfg = load_swarm(tmp_path, AGENTS)
+    with mock.patch.dict(sys.modules, {"supervisor": None}):
+        reconcile._ensure_supervisor(cfg)  # ImportError swallowed -> no raise
 
 
 def test_stop_all_kills_running(tmp_path):

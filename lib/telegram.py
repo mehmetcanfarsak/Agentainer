@@ -559,11 +559,13 @@ def _cmd_reconcile(cfg, arg):
 def _cmd_status(cfg, arg):
     lines = [f"🐝 {cfg.name}"]
     for a in cfg.agents:
-        running = tmux.session_exists(a.session)
+        alive = tmux.session_exists(a.session)
+        exited = alive and tmux.agent_exited(a.session, a.name)
+        running = alive and not exited
         busy = running and turn.busy_info(cfg, a) is not None
         depth = len(mail.queued_files(cfg, a.name))
-        dot = "🟢" if running else "⚪"
-        state = "busy" if busy else ("idle" if running else "down")
+        dot = "🟢" if running else ("🔴" if exited else "⚪")
+        state = "busy" if busy else ("idle" if running else ("exited" if exited else "down"))
         tail = f" · {depth} queued" if depth else ""
         lines.append(f"{dot} {a.name} [{a.type}] {state}{tail}")
     lines.append(f"you: {'available' if cfg.user_available else 'away'}")
@@ -676,7 +678,11 @@ def _cmd_type(cfg, arg):
     if len(parts) != 2:
         raise TelegramError("usage: /type <agent> <text>")
     a = cfg.get(parts[0])
-    tmux.paste_into(cfg, a.session, parts[1])
+    res = mail.type_into_pane(cfg, a.name, parts[1])
+    if res.get("staged"):
+        # Agent is mid-turn; a submit Enter would be swallowed. The supervisor
+        # types+submits this the moment the turn ends -- tell the operator so.
+        return f"⌨️ {a.name} is busy -- queued your input; it sends when the turn ends"
     return f"⌨️ typed into {a.name}"
 
 

@@ -105,6 +105,32 @@ def supervisor_alive(cfg: SwarmConfig) -> bool:
         return False
 
 
+def ensure_supervisor(cfg: SwarmConfig) -> bool:
+    """Guarantee a liveness heartbeat exists for *cfg*; return True if we started one.
+
+    ``up_config`` starts the supervisor on the CLI ``up`` / UI dashboard-up path,
+    but the other "bring agents up" surfaces -- the UI per-agent / Start-all
+    buttons, MCP ``up_swarm`` / ``start_agent``, and Telegram ``/up`` -- all funnel
+    through ``reconcile.start_one`` / ``start_all``, which only make tmux match the
+    config. Without this, a swarm brought up through any of those runs with NO
+    heartbeat: staged pane input never flushes, unread mail is never re-nudged,
+    pings never fire, and a stale/dead agent wedges forever (ProjectPlan §24: "do
+    not drop the liveness supervisor").
+
+    Idempotent and side-effect-light: a no-op when supervising is disabled, when a
+    supervisor is already alive, or when no session is actually running yet (so it
+    never spawns a watcher with an empty watch-set). It watches the agents running
+    *now*, matching ``up_config``'s existing "watch what we started" behaviour.
+    """
+    if not cfg.supervise or supervisor_alive(cfg):
+        return False
+    running = [a.name for a in cfg.agents if tmux.session_exists(a.session)]
+    if not running:
+        return False
+    start_supervisor(cfg, running)
+    return True
+
+
 # --------------------------------------------------------------------------
 # the heartbeat
 # --------------------------------------------------------------------------
@@ -147,12 +173,19 @@ def supervise_once(cfg: SwarmConfig, names: list[str], seen_dead: set[str]) -> N
                 log.log_event(cfg, name, "stale-busy", age_s=int(age_ms / 1000))
                 turn.mark_turn_finished(cfg, name)
 
-        # (b) DEAD session. Don't try to deliver into a pane that no longer
-        # exists; reconcile the turn and warn once per transition.
-        if not tmux.session_exists(agent.session):
+        # (b) DEAD or EXITED. Don't try to deliver into a pane that no longer
+        # exists -- OR into one whose CLI has exited and left a bare login shell
+        # (the launch wrapper's `exec bash -l` fallback keeps the SESSION alive
+        # after the agent PROCESS is gone). Pasting a nudge into that shell would
+        # type the protocol text straight at a bash prompt. Reconcile the turn
+        # and warn once per transition; ``exited`` is logged distinctly from a
+        # vanished session so the operator can tell a crash from a kill.
+        alive = tmux.session_exists(agent.session)
+        exited = alive and tmux.agent_exited(agent.session, name)
+        if not alive or exited:
             if name not in seen_dead:
                 seen_dead.add(name)
-                log.log_event(cfg, name, "dead")
+                log.log_event(cfg, name, "exited" if exited else "dead")
                 turn.mark_turn_finished(cfg, name)
             continue
         seen_dead.discard(name)
@@ -174,6 +207,13 @@ def supervise_once(cfg: SwarmConfig, names: list[str], seen_dead: set[str]) -> N
         # mail always takes priority over pings.
         if turn.busy_info(cfg, agent) is None:
             mail.process_read_folder(cfg, name)
+            # Operator input typed into the pane while the agent was busy was
+            # STAGED (its submit Enter would have been swallowed); submit it now
+            # that the agent is idle. It's a live intervention, so it wins over
+            # queued mail -- and once submitted the agent is busy again, so skip
+            # the rest of this tick and let the turn run.
+            if mail.flush_staged_input(cfg, name):
+                continue
             # present_current releases the next queued message AND re-nudges a
             # message already sitting unread in the inbox (a nudge whose paste
             # failed once), so the heartbeat actually retries delivery rather
@@ -181,6 +221,15 @@ def supervise_once(cfg: SwarmConfig, names: list[str], seen_dead: set[str]) -> N
             # no mail at all -- real mail always wins over a periodic ping.
             if not mail.present_current(cfg, name):
                 mail.maybe_ping(cfg, name)
+        else:
+            # Busy: never disturb the live turn -- no read-folder sweep, no mail
+            # release, no nudge. But a ``when_busy="queue"`` ping rule may still
+            # come due, and maybe_ping only ENQUEUES it (the queue is delivered
+            # when the agent next idles); _due_cron_ping already passes over any
+            # ``when_busy="skip"`` rule while busy. This is the ONLY place a
+            # queue-policy ping can fire -- the idle branch above always sees
+            # busy=False, so without this ``when_busy="queue"`` would be dead.
+            mail.maybe_ping(cfg, name)
 
 
 def _emit(cfg: SwarmConfig, kind: str, msg: str) -> None:

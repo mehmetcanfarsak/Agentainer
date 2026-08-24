@@ -7,7 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## 🎉 [2.1.1] — 2026-07-14
 
+### ✨ Added
+- **Re-present a message after a compaction (claude `SessionStart` hook).** When
+  a claude agent compacts (or resumes/clears), the summarised context drops the
+  last nudge — the exact mailbox paths and protocol — so the model can be left
+  idle "holding" an unread inbox message it no longer knows how to act on. A new
+  `SessionStart` hook (installed alongside the `Stop` hook) fires
+  `agentainer hook claude --event sessionstart`, which re-presents the agent's
+  current inbox message the instant the session restarts (source `compact` /
+  `resume` / `clear`; `startup` is ignored so the first prompt isn't doubled).
+  This makes recovery **instant and supervisor-independent**; the liveness
+  supervisor's `present_current` re-nudge remains the fallback. Codex has no
+  compaction hook, so it relies on that supervisor fallback.
+
 ### 🐛 Fixed
+- **A crashed/exited agent was still counted as "running" everywhere.** The launch
+  wrapper runs the agent's CLI then, on exit, prints an exit line and falls back to
+  an interactive shell (`exec "${SHELL:-bash}" -l`) so the pane stays inspectable —
+  which keeps the tmux **session** alive after the agent **process** is gone. Every
+  status readout (CLI `status` / `swarms`, UI dashboard + agent grid, MCP
+  `list_swarms` / `swarm_status`, Telegram `/status`) computed "running" purely from
+  `tmux.session_exists`, so a swarm whose agents had crashed happily reported e.g.
+  "9/9 running". Worse, the supervisor's idle branch would then **paste nudges/mail
+  into that bare bash prompt**. Now a shared `tmux.agent_running(agent)` (session
+  exists **and** the wrapper's exit sentinel is absent from the pane) backs all four
+  surfaces; a zombie session shows a distinct **`exited`** state (red dot in
+  Telegram; an amber pill + one-click **Restart** in the UI, since a plain Start
+  no-ops on the still-present session), and the supervisor treats an exited agent
+  like a dead one — logs it (`exited`, distinct from `dead`), reconciles the turn,
+  and never delivers into the shell.
+- **Bringing a swarm up from the UI buttons / MCP / Telegram left it with no
+  liveness supervisor.** Only `up_config` (CLI `agentainer up` and the UI
+  dashboard "up") started the heartbeat; the UI per-agent **Start** / **Start
+  all** buttons, MCP `up_swarm` / `start_agent`, and Telegram `/up` all funnel
+  through `reconcile.start_one` / `start_all`, which just make tmux match the
+  config. A swarm brought up through any of those therefore ran with **no
+  heartbeat** — staged pane input never flushed, unread mail was never re-nudged,
+  cron pings never fired, and a stale/dead agent could wedge forever (the
+  supervisor is a hard invariant: "do not drop it"). New
+  `supervisor.ensure_supervisor(cfg)` (idempotent: no-op when supervising is off,
+  a supervisor is already alive, or nothing is running) is now called by
+  `start_one` / `start_all`, so every "start" surface gets the same heartbeat the
+  CLI/dashboard path already had.
+- **Enabling the shared Telegram bot from the UI didn't start listening.** In
+  multi-swarm `serve`, the shared bot is edited on the global **Settings** page
+  (`POST /api/settings`), which saved the token/chat/enable flag but never
+  (re)started the single control-plane poller — so turning Telegram on (or
+  changing the token) in the UI did nothing until `serve` was restarted, and
+  inbound replies + slash-commands stayed dead. `/api/settings` now stops and
+  (re)starts the control poller whenever the Telegram settings change, matching
+  what the per-swarm `/api/telegram` endpoint already did. (Single-config servers
+  keep using the per-swarm poller and are left untouched, so no second poller can
+  fight over the one Telegram offset.)
+- **`when_busy: queue` pings never fired.** A per-agent `pings:` rule set to
+  `when_busy: queue` is meant to still enqueue while the agent is mid-turn (the
+  ping waits in the queue and is delivered when the turn ends). But the only
+  caller of the ping engine sat inside the supervisor's *idle-only* branch, so it
+  was never consulted while an agent was busy — making `when_busy: queue`
+  indistinguishable from `skip` in the running system. The supervisor now also
+  runs the ping engine on the busy branch; it only **enqueues** (never nudges or
+  otherwise disturbs the live turn), and a `when_busy: skip` rule is still passed
+  over while busy.
+- **Type-into-pane input was silently lost when the agent was busy.** The UI /
+  Telegram "type straight into the session" feature pasted text and pressed
+  Enter once, immediately — but a coding-agent CLI (claude, codex, …) *buffers*
+  typed text mid-turn while *swallowing* the submit Enter, so anything typed
+  into a busy pane landed in the input box and was never submitted; the model
+  never saw it. Direct-to-pane input now goes through `mail.type_into_pane`:
+  when the agent is mid-turn the text is **staged** (never typed into the doomed
+  pane) and the liveness supervisor pastes + submits it — fresh, through the
+  confirmed paste stack — the moment the turn ends (staged input wins over
+  queued mail). When the agent is idle it is submitted now, and the turn is
+  marked started so busy-detection stays accurate. The UI/Telegram surface a
+  "queued — sends when the turn ends" acknowledgement. (Same "never rely on the
+  model's timing" discipline as the mailroom; needs the supervisor heartbeat.)
 - **Idle agent never re-nudged about a message already in its inbox.** A nudge
   whose paste failed to land (agent looked idle, but the "you have mail" prompt
   never reached the pane) was never retried: the idle-recovery paths only nudged

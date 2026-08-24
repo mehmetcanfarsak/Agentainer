@@ -60,6 +60,21 @@ def warn(msg: str) -> None:
     print(f"!! {msg}", file=sys.stderr)
 
 
+def _ensure_supervisor(cfg) -> None:
+    """Make sure a liveness heartbeat exists after a start (best-effort).
+
+    ``start_one`` / ``start_all`` are the launch path for the UI buttons, MCP, and
+    Telegram; without this they'd bring agents up with no supervisor (unlike the
+    CLI/dashboard ``up_config`` path). Lazy import + ImportError-tolerant, mirroring
+    ``cli.up_config`` so a stripped-down install still starts agents.
+    """
+    try:
+        import supervisor as _sup  # lazy: keep reconcile importable without it
+    except ImportError:  # defensive, mirrors up_config's ImportError tolerance
+        return
+    _sup.ensure_supervisor(cfg)
+
+
 # --------------------------------------------------------------------------
 # YAML read / write (write path is stdlib-only, no PyYAML)
 # --------------------------------------------------------------------------
@@ -432,6 +447,7 @@ def start_one(cfg, name: str, *, _start_fn=None) -> bool:
         start_fn = _cli.launch_agent_full
     _start_agent(cfg, agent, start_fn)
     info(f"start_one: started {name}")
+    _ensure_supervisor(cfg)
     return True
 
 
@@ -455,7 +471,10 @@ def start_all(cfg, *, _start_fn=None) -> list:
     A thin wrapper over ``reconcile`` (start-only) so the UI's "Start all" button
     has one authoritative launch path. ``_start_fn`` is injectable for tests.
     """
-    return reconcile(cfg, start_missing=True, stop_extra=False, _start_fn=_start_fn)["started"]
+    started = reconcile(cfg, start_missing=True, stop_extra=False, _start_fn=_start_fn)["started"]
+    if started:
+        _ensure_supervisor(cfg)
+    return started
 
 
 def stop_all(cfg) -> list:

@@ -199,6 +199,18 @@ automatically upgraded to `captur: hook` at load time, because `none` would stri
 the agent's only turn-completion signal and leave the orchestrator blind to a
 silent turn (which can wedge the whole swarm). A warning is emitted.
 
+**Compaction re-presentation (claude):** when a claude agent **compacts** its
+context (auto or `/compact`), resumes, or is cleared, the summarised history
+drops the last nudge — the exact `inbox/`/`outbox/`/`read/` paths and the
+protocol — so a model left "holding" an unread message may no longer know how to
+act on it. `agentainer up` therefore installs a claude **`SessionStart`** hook
+next to the `Stop` hook; it re-presents the agent's current inbox message the
+instant the session restarts (sources `compact`/`resume`/`clear`; `startup` is
+ignored so the launch prompt isn't doubled). Recovery is immediate and does not
+depend on a supervisor tick — though the liveness supervisor's `present_current`
+re-nudge remains the fallback (and is the **only** recovery for codex, which has
+no compaction hook).
+
 ### `role` — string, default `""`
 The agent's standing instructions — its persona and what it should do. This is the
 v2 field. `first_prompt` (and `first_prompt_file`) are **deprecated aliases** and

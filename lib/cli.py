@@ -468,7 +468,9 @@ def cmd_status(args) -> int:
     cfg = cfgmod.load(args.config)
     print(f"swarm: {cfg.name}   root: {cfg.root}")
     for agent in cfg.agents:
-        running = tmux.session_exists(agent.session)
+        alive = tmux.session_exists(agent.session)
+        exited = alive and tmux.agent_exited(agent.session, agent.name)
+        running = alive and not exited
         if not running:
             turn_s = "-"
         elif not agent.busy_check:
@@ -480,9 +482,10 @@ def cmd_status(args) -> int:
         depth = len([f for f in q.iterdir() if f.is_file()]) if q.is_dir() else 0
         inbox = cfg.mail_paths(agent).inbox
         unread = len([f for f in inbox.iterdir() if f.is_file()]) if inbox.is_dir() else 0
+        health = "up" if running else ("exited" if exited else "down")
         print(
             f"  {agent.name} ({agent.type}) "
-            f"{'up' if running else 'down'} {turn_s} "
+            f"{health} {turn_s} "
             f"queue={depth} unread={unread} "
             f"talks={', '.join(agent.can_talk_to) or '-'}"
         )
@@ -686,6 +689,20 @@ def cmd_hook(args) -> int:
     """
     cfg, agent = discover_context(args.config, args.agent)
 
+    if getattr(args, "event", "stop") == "sessionstart":
+        # Claude SessionStart hook. After a compaction/resume/clear the model has
+        # lost the last nudge (mailbox paths + protocol) from its context, so
+        # re-present its current inbox message immediately instead of waiting for
+        # a supervisor tick. `startup` is skipped: the normal launch flow already
+        # delivers the first prompt, and re-presenting there would double it.
+        try:
+            payload = json.load(sys.stdin)
+        except (json.JSONDecodeError, ValueError):
+            payload = {}
+        if payload.get("source") in ("compact", "resume", "clear"):
+            mail.present_current(cfg, agent.name)
+        return 0
+
     if args.type == "claude":
         try:
             payload = json.load(sys.stdin)
@@ -853,7 +870,7 @@ def cmd_swarms_list(args) -> int:
         except ConfigError as exc:
             print(f"{name}\t(invalid: {exc})\t{e['path']}")
             continue
-        running = sum(1 for a in cfg.agents if tmux.session_exists(a.session))
+        running = sum(1 for a in cfg.agents if tmux.agent_running(a))
         print(f"{name}\t{running}/{len(cfg.agents)} running\t{e['path']}")
     return 0
 
@@ -1069,6 +1086,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_hook.add_argument("type", choices=["claude", "codex", "generic"])
     p_hook.add_argument("payload", nargs="?", help="JSON payload (codex passes it as argv)")
     p_hook.add_argument("--agent", help="override the detected agent name")
+    p_hook.add_argument(
+        "--event", choices=["stop", "sessionstart"], default="stop",
+        help="which hook fired (default: stop; sessionstart re-presents after a compaction)",
+    )
 
     p_watch = add("watch", cmd_watch, "internal: poll an agent's tmux pane for completed turns")
     p_watch.add_argument("agent")

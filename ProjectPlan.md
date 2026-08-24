@@ -914,6 +914,46 @@ Every explicit choice made during design:
   dependencies. New management capabilities must add a matching MCP tool
   alongside their CLI/UI/Telegram surfaces. Docs: `docs/mcp.md`.
 
+- **D28.** **Staged direct-to-pane input survives a busy agent.** The "type
+  straight into the session" escape hatch (UI `POST /api/type`, Telegram `/type`)
+  used to paste text and press Enter once, immediately — but a coding-agent CLI
+  buffers text typed mid-turn while *swallowing* the submit Enter, so input typed
+  into a busy pane sat unsent and the model never saw it. Direct-to-pane input
+  now routes through `mail.type_into_pane`: **busy → stage** the text in
+  `run/<agent>.staged.json` (never typed into the doomed pane); **idle → paste +
+  submit now** and `mark_turn_started` so busy-detection stays accurate. The
+  supervisor idle branch flushes one staged line per tick via
+  `mail.flush_staged_input` (through the confirmed paste stack), **before**
+  presenting queued mail (a live intervention outranks the queue) and `continue`s
+  the tick so the fresh turn isn't clobbered. Same "never rely on the model's
+  timing" discipline as the mailroom; MCP/CLI expose no type-into-pane so there
+  is no parity gap. Needs the liveness supervisor to flush.
+
+- **D29.** **Re-present the current message after a claude compaction
+  (`SessionStart` hook).** A compaction (auto or `/compact`), resume, or clear
+  summarises away the last nudge — the exact mailbox paths and protocol — so an
+  agent left holding an unread inbox message may no longer know how to act on it.
+  `up` installs a claude **`SessionStart`** hook (no matcher, beside the `Stop`
+  hook) that fires `agentainer hook claude --event sessionstart`; it calls
+  `mail.present_current` for sources `compact`/`resume`/`clear` (ignoring
+  `startup`, whose first prompt the launch flow already delivers). Recovery is
+  instant and supervisor-independent; the supervisor's `present_current` re-nudge
+  stays the fallback and is the **only** recovery for codex (no compaction hook).
+  Chose a stdlib bash hook + `source` filtering in `agentainer hook` over a
+  matcher (a matcher can keep the interactive TUI from ever firing the hook).
+- **D30.** **"Running" means the agent PROCESS is alive, not just the tmux
+  session.** The launch wrapper prints an exit sentinel and falls back to an
+  interactive shell (`exec "${SHELL:-bash}" -l`) when the CLI exits, so the
+  session outlives the process. `tmux.agent_running(agent)` =
+  `session_exists AND not agent_exited` (the latter scans the pane for
+  `exit_marker(name)`) is the one truthful check every status surface
+  (CLI/UI/Telegram/MCP) shares; a zombie session surfaces as a distinct
+  **`exited`** state, and the supervisor treats it like a dead session (logs
+  `exited`, reconciles the turn, never delivers into the fallback shell). Chose
+  the wrapper's own exit sentinel over `pane_current_command` because legitimate
+  agents can themselves be shells (mock bash-loop agents, wrapper aliases), which
+  would make a foreground-command check misfire.
+
 ---
 
 ## 30. Glossary
