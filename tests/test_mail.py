@@ -301,6 +301,148 @@ def test_present_current_renudges_stuck_inbox_message(tmp_runtime):
 
 
 # --------------------------------------------------------------------------
+# direct-to-pane staged input (type_into_pane / stage_input / flush_staged_input)
+# --------------------------------------------------------------------------
+
+
+def test_type_into_pane_idle_submits_and_marks_turn(tmp_runtime):
+    alice = make_agent(tmp_runtime, "alice", ["user"])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    with mock.patch.object(tmuxmod, "paste_into", return_value=True) as p:
+        res = mailmod.type_into_pane(cfg, "alice", "do the thing")
+    p.assert_called_once()
+    assert res == {"ok": True, "submitted": True, "staged": False}
+    # Marked busy so the supervisor won't clobber the resulting turn with a nudge.
+    assert turnmod.busy_info(cfg, alice) is not None
+    assert mailmod._load_staged(cfg, "alice") == []
+
+
+def test_type_into_pane_busy_stages_without_typing(tmp_runtime):
+    alice = make_agent(tmp_runtime, "alice", ["user"])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    turnmod.mark_turn_started(cfg, "alice", "user")  # busy: a submit Enter would be swallowed
+    with mock.patch.object(tmuxmod, "paste_into", return_value=True) as p:
+        res = mailmod.type_into_pane(cfg, "alice", "reply later")
+    p.assert_not_called()  # never type into a busy pane
+    assert res == {"ok": True, "submitted": False, "staged": True}
+    assert mailmod._load_staged(cfg, "alice") == ["reply later"]
+
+
+def test_type_into_pane_idle_paste_unconfirmed_stages(tmp_runtime):
+    alice = make_agent(tmp_runtime, "alice", ["user"])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    with mock.patch.object(tmuxmod, "paste_into", return_value=False) as p:
+        res = mailmod.type_into_pane(cfg, "alice", "unconfirmed")
+    p.assert_called_once()
+    assert res == {"ok": False, "submitted": False, "staged": True}
+    assert mailmod._load_staged(cfg, "alice") == ["unconfirmed"]
+
+
+def test_flush_staged_input_empty_is_noop(tmp_runtime):
+    alice = make_agent(tmp_runtime, "alice", ["user"])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    with mock.patch.object(tmuxmod, "paste_into", return_value=True) as p:
+        assert mailmod.flush_staged_input(cfg, "alice") is False
+        p.assert_not_called()
+
+
+def test_flush_staged_input_busy_keeps_item(tmp_runtime):
+    alice = make_agent(tmp_runtime, "alice", ["user"])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    mailmod.stage_input(cfg, "alice", "queued")
+    turnmod.mark_turn_started(cfg, "alice", "user")  # busy -> do not submit yet
+    with mock.patch.object(tmuxmod, "paste_into", return_value=True) as p:
+        assert mailmod.flush_staged_input(cfg, "alice") is False
+        p.assert_not_called()
+    assert mailmod._load_staged(cfg, "alice") == ["queued"]
+
+
+def test_flush_staged_input_submits_oldest_and_dequeues(tmp_runtime):
+    alice = make_agent(tmp_runtime, "alice", ["user"])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    mailmod.stage_input(cfg, "alice", "first")
+    mailmod.stage_input(cfg, "alice", "second")
+    with mock.patch.object(tmuxmod, "paste_into", return_value=True) as p:
+        assert mailmod.flush_staged_input(cfg, "alice") is True
+        assert p.call_args[0][2] == "first"  # oldest first (one-at-a-time)
+    assert turnmod.busy_info(cfg, alice) is not None  # turn marked started
+    assert mailmod._load_staged(cfg, "alice") == ["second"]
+
+
+def test_flush_staged_input_last_item_removes_file(tmp_runtime):
+    alice = make_agent(tmp_runtime, "alice", ["user"])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    mailmod.stage_input(cfg, "alice", "only")
+    assert mailmod._staged_path(cfg, "alice").exists()
+    with mock.patch.object(tmuxmod, "paste_into", return_value=True):
+        assert mailmod.flush_staged_input(cfg, "alice") is True
+    assert mailmod._load_staged(cfg, "alice") == []
+    assert not mailmod._staged_path(cfg, "alice").exists()  # emptied queue deletes the file
+
+
+def test_flush_staged_input_paste_fails_keeps_item(tmp_runtime):
+    alice = make_agent(tmp_runtime, "alice", ["user"])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    mailmod.stage_input(cfg, "alice", "retry me")
+    with mock.patch.object(tmuxmod, "paste_into", return_value=False):
+        assert mailmod.flush_staged_input(cfg, "alice") is False
+    assert mailmod._load_staged(cfg, "alice") == ["retry me"]  # left for next tick
+
+
+def test_flush_staged_input_concurrent_restage_removed_by_value(tmp_runtime):
+    """If a concurrent stage reordered the queue while we pasted, the submitted
+    item is still dropped by value rather than blindly popping the new head."""
+    alice = make_agent(tmp_runtime, "alice", ["user"])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    mailmod.stage_input(cfg, "alice", "target")
+
+    def racey(c, s, t):
+        mailmod._save_staged(cfg, "alice", ["jumped", "target"])  # another surface staged ahead
+        return True
+
+    with mock.patch.object(tmuxmod, "paste_into", side_effect=racey):
+        assert mailmod.flush_staged_input(cfg, "alice") is True
+    assert mailmod._load_staged(cfg, "alice") == ["jumped"]  # removed by value, not head
+
+
+def test_flush_staged_input_concurrent_drain_leaves_queue(tmp_runtime):
+    """If the submitted item vanished from the queue concurrently, we save what
+    remains untouched (neither head-match nor value-match applies)."""
+    alice = make_agent(tmp_runtime, "alice", ["user"])
+    cfg = build_cfg(tmp_runtime, [alice])
+    mailmod.init_mailboxes(cfg)
+    mailmod.stage_input(cfg, "alice", "target")
+
+    def racey(c, s, t):
+        mailmod._save_staged(cfg, "alice", ["other"])  # "target" no longer present
+        return True
+
+    with mock.patch.object(tmuxmod, "paste_into", side_effect=racey):
+        assert mailmod.flush_staged_input(cfg, "alice") is True
+    assert mailmod._load_staged(cfg, "alice") == ["other"]
+
+
+def test_staged_load_handles_corrupt_and_nonlist(tmp_runtime):
+    alice = make_agent(tmp_runtime, "alice", ["user"])
+    cfg = build_cfg(tmp_runtime, [alice])
+    cfg.run_dir.mkdir(parents=True, exist_ok=True)
+    path = mailmod._staged_path(cfg, "alice")
+    path.write_text("{ not json")
+    assert mailmod._load_staged(cfg, "alice") == []
+    path.write_text('{"a": 1}')  # valid JSON, wrong shape (not a list)
+    assert mailmod._load_staged(cfg, "alice") == []
+
+
+# --------------------------------------------------------------------------
 # nudge
 # --------------------------------------------------------------------------
 

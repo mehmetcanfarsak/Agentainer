@@ -32,6 +32,7 @@ from config import ConfigError  # noqa: E402
 import hooks  # noqa: E402
 import log  # noqa: E402
 import mail  # noqa: E402
+import materialize  # noqa: E402
 import mcp as mcpmod  # noqa: E402
 import sessions  # noqa: E402
 import tmux  # noqa: E402
@@ -39,6 +40,7 @@ import turn  # noqa: E402
 import ui  # noqa: E402
 import reconcile  # noqa: E402
 import registry  # noqa: E402
+import reset as resetmod  # noqa: E402
 import scaffold  # noqa: E402
 
 # Repo root: AGENTAINER_HOME overrides, else this file's grandparent (lib/..).
@@ -212,6 +214,13 @@ def start_agent(cfg, agent, extra_env=None, resume_cmd: str | None = None) -> No
             )
         agent.workdir.mkdir(parents=True, exist_ok=True)
         info(f"{agent.name}: created {agent.workdir}")
+
+    # Materialise per-agent coding-agent config (mcp / context / skills /
+    # settings / files) into the workdir. Runs after turn-detection has installed
+    # .claude/settings.json (in launch_agent_full), so `settings:` merges with the
+    # hook config rather than clobbering it. Best-effort: warnings, never fatal.
+    for message in materialize.apply(cfg, agent):
+        warn(f"{agent.name}: {message}")
 
     # A newly launched CLI has no turn in flight (resumed or not).
     turn.write_turn_state(cfg, agent.name, {"delivered": 0, "completed": 0, "since": 0, "by": None})
@@ -431,30 +440,17 @@ def cmd_remove_session(args) -> int:
 
     Refuses while any agent (or the supervisor) is still running, because pulling
     state out from under a live agent corrupts it -- ``down`` first.
+
+    This is the ``state`` (soft) level of ``reset``; ``remove-session`` is kept as
+    a back-compat alias and routes through the same shared core (``lib/reset.py``).
     """
     cfg = cfgmod.load(args.config)
-
-    if shutil.which("tmux"):
-        for agent in cfg.agents:
-            if tmux.session_exists(agent.session):
-                die(
-                    f"{agent.name} is still running -- run `down` first, "
-                    "then `remove-session`"
-                )
-        if _supervisor_alive(cfg):
-            die("the liveness supervisor is still running -- run `down` first")
-
-    removed: list[Path] = []
-    if cfg.runtime.exists():
-        shutil.rmtree(cfg.runtime)
-        removed.append(cfg.runtime)
-    for agent in cfg.agents:
-        mp = cfg.mail_paths(agent)
-        for folder in (mp.inbox, mp.outbox, mp.read, mp.sent, mp.failed):
-            if folder.exists():
-                shutil.rmtree(folder)
-                removed.append(folder)
-
+    try:
+        resetmod.guard_stopped(cfg)
+    except resetmod.ResetError as exc:
+        die(str(exc))
+    result = resetmod.reset(cfg, "state")
+    removed = result["removed"]
     if not removed:
         info("nothing to remove -- the swarm is already clean")
         return 0
@@ -464,11 +460,41 @@ def cmd_remove_session(args) -> int:
     return 0
 
 
+def cmd_reset(args) -> int:
+    """Reset a swarm to a clean slate: ``state`` (soft) or ``--full`` (hard).
+
+    ``state`` clears Agentainer's own data (conversations, mail, queue, logs) but
+    keeps the agents' work files. ``--full`` also deletes each agent's workspace
+    directory (their produced work), leaving a truly blank swarm -- the config
+    file is always preserved. Refuses while agents (or the supervisor) run.
+    """
+    cfg = cfgmod.load(args.config)
+    try:
+        resetmod.guard_stopped(cfg)
+    except resetmod.ResetError as exc:
+        die(str(exc))
+    level = "full" if getattr(args, "full", False) else "state"
+    result = resetmod.reset(cfg, level)
+    for message in result["warnings"]:
+        warn(message)
+    removed = result["removed"]
+    if not removed:
+        info("nothing to remove -- the swarm is already clean")
+        return 0
+    label = "full wipe" if level == "full" else "reset"
+    info(f"{label}: removed {len(removed)} path(s):")
+    for path in removed:
+        info(f"  {path}")
+    return 0
+
+
 def cmd_status(args) -> int:
     cfg = cfgmod.load(args.config)
     print(f"swarm: {cfg.name}   root: {cfg.root}")
     for agent in cfg.agents:
-        running = tmux.session_exists(agent.session)
+        alive = tmux.session_exists(agent.session)
+        exited = alive and tmux.agent_exited(agent.session, agent.name)
+        running = alive and not exited
         if not running:
             turn_s = "-"
         elif not agent.busy_check:
@@ -480,9 +506,10 @@ def cmd_status(args) -> int:
         depth = len([f for f in q.iterdir() if f.is_file()]) if q.is_dir() else 0
         inbox = cfg.mail_paths(agent).inbox
         unread = len([f for f in inbox.iterdir() if f.is_file()]) if inbox.is_dir() else 0
+        health = "up" if running else ("exited" if exited else "down")
         print(
             f"  {agent.name} ({agent.type}) "
-            f"{'up' if running else 'down'} {turn_s} "
+            f"{health} {turn_s} "
             f"queue={depth} unread={unread} "
             f"talks={', '.join(agent.can_talk_to) or '-'}"
         )
@@ -686,6 +713,20 @@ def cmd_hook(args) -> int:
     """
     cfg, agent = discover_context(args.config, args.agent)
 
+    if getattr(args, "event", "stop") == "sessionstart":
+        # Claude SessionStart hook. After a compaction/resume/clear the model has
+        # lost the last nudge (mailbox paths + protocol) from its context, so
+        # re-present its current inbox message immediately instead of waiting for
+        # a supervisor tick. `startup` is skipped: the normal launch flow already
+        # delivers the first prompt, and re-presenting there would double it.
+        try:
+            payload = json.load(sys.stdin)
+        except (json.JSONDecodeError, ValueError):
+            payload = {}
+        if payload.get("source") in ("compact", "resume", "clear"):
+            mail.present_current(cfg, agent.name)
+        return 0
+
     if args.type == "claude":
         try:
             payload = json.load(sys.stdin)
@@ -853,7 +894,7 @@ def cmd_swarms_list(args) -> int:
         except ConfigError as exc:
             print(f"{name}\t(invalid: {exc})\t{e['path']}")
             continue
-        running = sum(1 for a in cfg.agents if tmux.session_exists(a.session))
+        running = sum(1 for a in cfg.agents if tmux.agent_running(a))
         print(f"{name}\t{running}/{len(cfg.agents)} running\t{e['path']}")
     return 0
 
@@ -1015,6 +1056,11 @@ def build_parser() -> argparse.ArgumentParser:
     add("remove-session", cmd_remove_session,
         "delete all Agentainer state (runtime + mailboxes) so the next up starts fresh")
 
+    p_reset = add("reset", cmd_reset,
+        "start over: clear Agentainer state (soft), or --full to also delete work files")
+    p_reset.add_argument("--full", action="store_true",
+        help="delete each agent's workspace files too (hard wipe; config is kept)")
+
     p_down = add("down", cmd_down, "kill agent tmux sessions")
     p_down.add_argument("--only", help="comma-separated subset of agents to stop")
 
@@ -1069,6 +1115,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_hook.add_argument("type", choices=["claude", "codex", "generic"])
     p_hook.add_argument("payload", nargs="?", help="JSON payload (codex passes it as argv)")
     p_hook.add_argument("--agent", help="override the detected agent name")
+    p_hook.add_argument(
+        "--event", choices=["stop", "sessionstart"], default="stop",
+        help="which hook fired (default: stop; sessionstart re-presents after a compaction)",
+    )
 
     p_watch = add("watch", cmd_watch, "internal: poll an agent's tmux pane for completed turns")
     p_watch.add_argument("agent")

@@ -132,6 +132,27 @@ def test_install_claude_hook_command_is_absolute(tmp_path):
     assert cmd == str(hooks.HOOKS_DIR / "claude_stop.sh")
 
 
+def test_install_claude_hook_installs_sessionstart(tmp_path):
+    _, agent = claude_cfg(tmp_path)
+    agent.workdir.mkdir(parents=True)
+    settings = agent.workdir / ".claude"
+    settings.mkdir(parents=True)
+    # Pre-seed the user's own SessionStart hook to ensure it is kept.
+    (settings / "settings.json").write_text(
+        json.dumps({"hooks": {"SessionStart": [{"command": "user-ss"}]}})
+    )
+    with mock.patch.object(hooks, "pretrust_claude_dir"):
+        hooks.install_claude_hook(agent)
+    data = json.loads((settings / "settings.json").read_text())
+    ss = data["hooks"]["SessionStart"]
+    assert any("user-ss" in json.dumps(h) for h in ss)  # user's hook preserved
+    cmds = [json.dumps(h) for h in ss]
+    assert sum(hooks.HOOKS_DIR.name in c for c in cmds) == 1  # exactly one of ours
+    cmd = ss[-1]["hooks"][0]["command"]
+    assert os.path.isabs(cmd)
+    assert cmd == str(hooks.HOOKS_DIR / "claude_sessionstart.sh")
+
+
 def test_install_claude_hook_corrupt_json(tmp_path):
     _, agent = claude_cfg(tmp_path)
     agent.workdir.mkdir(parents=True)

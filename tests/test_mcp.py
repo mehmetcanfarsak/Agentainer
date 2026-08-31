@@ -219,6 +219,21 @@ def test_swarm_status(cfg, swarms, monkeypatch):
     assert by["bob"]["busy"] is False
 
 
+def test_swarm_status_reports_exited(cfg, swarms):
+    # alice's pane shows the exit sentinel -> exited/not-running; bob stays up.
+    pane = "[agentainer] agent alice exited (status 0)"
+    with mock_tmux(has_session=True, pane=pane):
+        out = _payload(_call("swarm_status", {"swarm": "demo"}, swarms=swarms))
+        row = _payload(_call("list_swarms", swarms=swarms))["swarms"][0]
+    by = {ag["name"]: ag for ag in out["agents"]}
+    assert by["alice"]["running"] is False
+    assert by["alice"]["exited"] is True
+    assert by["alice"]["busy"] is False
+    assert by["bob"]["running"] is True
+    assert by["bob"]["exited"] is False
+    assert row["running"] == 1  # zombie excluded from the machine-wide count
+
+
 def test_read_inbox_empty(swarms):
     out = _payload(_call("read_inbox", {"agent": "alice"}, swarms=swarms))
     assert out == {"agent": "alice", "inbox": []}
@@ -348,6 +363,29 @@ def test_down_swarm(cfg, swarms, monkeypatch):
     assert out["stopped"] == ["alice"]
 
 
+def test_reset_swarm_state(cfg, swarms, monkeypatch):
+    monkeypatch.setattr(mcp.resetmod, "guard_stopped", lambda c: None)
+    (cfg.runtime / "logs").mkdir(parents=True, exist_ok=True)
+    out = _payload(_call("reset_swarm", {"swarm": "demo"}, swarms=swarms))
+    assert out["ok"] and out["level"] == "state"
+    assert not cfg.runtime.exists()
+
+
+def test_reset_swarm_default_level(cfg, swarms, monkeypatch):
+    monkeypatch.setattr(mcp.resetmod, "guard_stopped", lambda c: None)
+    out = _payload(_call("reset_swarm", {"swarm": "demo"}, swarms=swarms))
+    assert out["level"] == "state"
+
+
+def test_reset_swarm_refused_while_running(cfg, swarms, monkeypatch):
+    def boom(c):
+        raise mcp.resetmod.ResetError("still running")
+    monkeypatch.setattr(mcp.resetmod, "guard_stopped", boom)
+    res = _call("reset_swarm", {"swarm": "demo"}, swarms=swarms)
+    assert res["isError"] is True
+    assert "still running" in res["content"][0]["text"]
+
+
 def test_create_swarm():
     out = _payload(_call("create_swarm", {"name": "fresh"}, swarms={}))
     assert out["ok"] and out["name"] == "fresh"
@@ -365,6 +403,35 @@ def test_create_swarm_duplicate(cfg):
     res = _call("create_swarm", {"name": "demo"}, swarms={})
     assert res["isError"] is True
     assert "already registered" in res["content"][0]["text"]
+
+
+def test_configure_agent(cfg, swarms):
+    out = _payload(_call(
+        "configure_agent",
+        {"swarm": "demo", "agent": "alice",
+         "mcp": {"gh": {"command": "npx"}},
+         "context": "You are alice.\nBe precise.",
+         "skills": [], "settings": {"model": "opus"}, "files": {"a/b.md": "x"}},
+        swarms=swarms,
+    ))
+    assert out["ok"] and set(out["configured"]) >= {"mcp", "context", "settings", "files"}
+    import config as cfgmod
+    a = cfgmod.load(cfg.path).get("alice")
+    assert a.mcp == {"gh": {"command": "npx"}}
+    assert a.context.startswith("You are alice.")
+    assert a.settings == {"model": "opus"} and a.files == {"a/b.md": "x"}
+
+
+def test_configure_agent_requires_a_field(cfg, swarms):
+    res = _call("configure_agent", {"swarm": "demo", "agent": "alice"}, swarms=swarms)
+    assert res["isError"] is True
+    assert "at least one" in res["content"][0]["text"]
+
+
+def test_configure_agent_bad_value(cfg, swarms):
+    # a non-mapping mcp is rejected by the loader -> surfaced as an error
+    res = _call("configure_agent", {"swarm": "demo", "agent": "alice", "mcp": [1, 2]}, swarms=swarms)
+    assert res["isError"] is True
 
 
 def test_add_agent(cfg, swarms):

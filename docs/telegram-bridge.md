@@ -287,12 +287,13 @@ swarm that bare `/commands` target).
 
 | Command | Does | Backed by |
 |---|---|---|
-| `/status` | swarm overview (up/down, busy, queue depth, your availability) | `tmux` + `turn` + `mail` |
+| `/status` | swarm overview (idle/busy/exited/down, queue depth, your availability) | `tmux` + `turn` + `mail` |
 | `/agents` | list agents + their `can_talk_to` | `cfg.agents` |
 | `/up [agent]` | start all / one | `reconcile.start_all` / `start_one` |
 | `/down [agent]` | stop all / one | `reconcile.stop_all` / `stop_one` |
 | `/restart [agent]` | restart all / one | `reconcile.stop_* + start_*` |
 | `/reconcile` | make the running set match the config | `reconcile.reconcile` |
+| `/reset [full]` | start over: clear state (soft), or `full` to also delete work files; refuses while agents run | `reset.reset` |
 | `/to <agent> <msg>` | send mail **as the user** | `mail.send_as_user` |
 | *(reply to a mirrored msg)* | answer its sender as the user | `telegram._route_user_reply` |
 | `/available` · `/away` | toggle your availability | `reconcile.edit_swarm` + `mail.set_user_available` |
@@ -301,7 +302,7 @@ swarm that bare `/commands` target).
 | `/pane <agent>` | terminal snapshot of the live pane | `tmux.capture_pane` |
 | `/logs [agent] [n]` | recent event-log lines | `.agentainer/logs/*.jsonl` |
 | `/config` | swarm + telegram settings summary | `cfg` |
-| `/type <agent> <text>` | type text straight into the pane | `tmux.paste_into` |
+| `/type <agent> <text>` | type into the pane; if the agent is mid-turn the text is *staged* and the supervisor submits it when the turn ends (a busy CLI swallows a submit Enter) | `mail.type_into_pane` |
 | `/key <agent> <Key>` | send one control key (`Enter`, `Escape`, `C-c`, …) | `tmux.send_key` |
 | `/compact [agent]` | `/compact` one or all running agents | `tmux.paste_into` |
 | `/idle <agent>` | force an agent idle + drain queued mail | `turn` + `mail` |

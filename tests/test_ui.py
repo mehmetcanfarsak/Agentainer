@@ -149,6 +149,26 @@ def test_api_status_and_agents(cfg):
         assert data["agents"][0]["type"] == "claude"
 
 
+def test_api_status_reports_exited_zombie(cfg):
+    # Session alive, but alice's pane shows the launch-wrapper exit sentinel ->
+    # the CLI has fallen back to a shell. She must read as exited/not-running,
+    # while bob (same pane text, different name) stays running.
+    pane = "[agentainer] agent alice exited (status 0)\n$ "
+    with mock_tmux(pane=pane), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        code, body = _get(h, "/api/status", token="sekret")
+        data = json.loads(body)
+        alice = next(a for a in data["agents"] if a["name"] == "alice")
+        bob = next(a for a in data["agents"] if a["name"] == "bob")
+        assert alice["running"] is False
+        assert alice["state"] == "exited"
+        assert alice["busy"] is False
+        assert bob["running"] is True
+        # Dashboard summary counts only the truly-running agent.
+        code, body = _get(h, "/api/swarms", token="sekret")
+        row = next(s for s in json.loads(body)["swarms"] if s["name"] == "demo")
+        assert row["running"] == 1
+
+
 def test_api_status_supervisor_absent(cfg):
     # Hide the supervisor module -> degraded to None, no crash.
     with mock_tmux(), mock.patch.dict(sys.modules, {"supervisor": None}):
@@ -836,6 +856,37 @@ def test_api_agent_add_with_pings(cfg):
         assert "dave" not in cfgmod.load(cfg.path).names()
 
 
+def test_api_agent_add_with_coding_config(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        code, body = _post(h, "/api/agent/add", "sekret", {
+            "name": "carol", "type": "claude", "command": "claude --x",
+            "can_talk_to": ["alice"],
+            "context": "You are carol.\nReview carefully.",
+            "mcp": {"gh": {"command": "npx", "args": ["-y", "s"]}},
+            "settings": {"model": "opus"},
+            "files": {"docs/NOTES.md": "line1\nline2"},
+        })
+        assert code == 200
+        import config as cfgmod
+        carol = cfgmod.load(cfg.path).get("carol")
+        assert carol.mcp == {"gh": {"command": "npx", "args": ["-y", "s"]}}
+        assert carol.context.startswith("You are carol.")
+        assert carol.settings == {"model": "opus"}
+        assert carol.files == {"docs/NOTES.md": "line1\nline2"}
+
+
+def test_api_agent_edit_coding_config(cfg):
+    with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
+        code, _ = _post(h, "/api/agent/edit", "sekret", {
+            "name": "alice",
+            "fields": {"context": "multi\nline\nctx", "mcp": {"x": {"command": "y"}}},
+        })
+        assert code == 200
+        import config as cfgmod
+        alice = cfgmod.load(cfg.path).get("alice")
+        assert alice.context == "multi\nline\nctx" and alice.mcp == {"x": {"command": "y"}}
+
+
 def test_api_agent_edit_pings(cfg):
     with mock_tmux(), ui.run_server(cfg, "sekret", host="127.0.0.1", port=0) as h:
         code, _ = _post(h, "/api/agent/edit", "sekret", {
@@ -1515,6 +1566,36 @@ def test_api_swarms_down_supervisor_absent(tmp_path):
     assert code == 200
 
 
+def test_api_swarms_reset_state_and_errors(tmp_path):
+    # empty swarm -> no running agents -> soft reset succeeds
+    path = registry.create_swarm("resetme")
+    import config as cfgmod
+    cfg = cfgmod.load(path)
+    (cfg.runtime / "logs").mkdir(parents=True, exist_ok=True)
+    with mock_tmux(), _rb_server() as h:
+        code, body = _qpost(h, "/api/swarms/reset", "sekret", {"name": "resetme"})
+        assert code == 200
+        j = json.loads(body)
+        assert j["ok"] is True and j["level"] == "state"
+        assert not cfg.runtime.exists()
+        # bad level -> 400
+        assert _qpost(h, "/api/swarms/reset", "sekret",
+                      {"name": "resetme", "level": "nuke"})[0] == 400
+        # unknown swarm -> 404
+        assert _qpost(h, "/api/swarms/reset", "sekret", {"name": "ghost"})[0] == 404
+        assert _post_raw(h, "/api/swarms/reset", "sekret", b"nope") == 400
+
+
+def test_api_swarms_reset_refuses_while_running(tmp_path):
+    # a swarm WITH an agent, under mock_tmux(has_session=True) -> guard 409
+    standalone = load_swarm(tmp_path, AGENTS, name="livereset")
+    registry.register(standalone.name, standalone.path)
+    with mock_tmux(has_session=True), _rb_server() as h:
+        code, body = _qpost(h, "/api/swarms/reset", "sekret", {"name": "livereset"})
+        assert code == 409
+        assert "running" in json.loads(body)["error"]
+
+
 def test_api_swarms_register_success_and_errors(tmp_path):
     # a standalone valid config to register
     standalone = load_swarm(tmp_path, AGENTS, name="standalone")
@@ -1580,6 +1661,47 @@ def test_api_settings_post_empty_body_ok(tmp_path):
         # neither telegram nor active_swarm -> still 200, no-op
         code, body = _qpost(h, "/api/settings", "sekret", {})
         assert code == 200 and json.loads(body)["ok"] is True
+
+
+def test_api_settings_post_manages_control_poller(tmp_path):
+    """Enabling the shared bot from the global Settings page must (re)start the
+    control-plane poller and disabling it must stop it -- otherwise inbound
+    Telegram stays dead until serve restarts (regression: the POST used to save
+    settings but never touch _tg_poller)."""
+    registry.create_swarm("alpha")
+
+    def fake_ctl(provider):
+        swarms = provider()
+        if swarms and ui.telegram.is_enabled(ui.telegram._primary_cfg(swarms)):
+            return DummyPoller()
+        return None
+
+    with mock_tmux(), mock.patch.object(ui.telegram, "start_control_poller", fake_ctl):
+        with _rb_server() as h:
+            # nothing configured at serve time -> no poller
+            assert ui._tg_poller is None
+            # enabling the shared bot from Settings starts the control poller
+            code, body = _qpost(h, "/api/settings", "sekret", {
+                "telegram": {"enabled": True, "bot_token": "1:x", "chat_id": "9"},
+            })
+            assert code == 200 and json.loads(body)["polling"] is True
+            started = ui._tg_poller
+            assert started is not None
+            # a further settings POST restarts it (picks up a token change)
+            code, body = _qpost(h, "/api/settings", "sekret", {
+                "telegram": {"bot_token": "2:y"},
+            })
+            assert code == 200 and json.loads(body)["polling"] is True
+            assert started.stopped is True and ui._tg_poller is not started
+            # disabling the bot stops the poller
+            code, body = _qpost(h, "/api/settings", "sekret", {
+                "telegram": {"enabled": False},
+            })
+            assert code == 200 and json.loads(body)["polling"] is False
+            assert ui._tg_poller is None
+            # a settings POST with no telegram key leaves the poller alone
+            assert _qpost(h, "/api/settings", "sekret", {"active_swarm": "alpha"})[0] == 200
+            assert ui._tg_poller is None
 
 
 def test_set_cfg_rename_on_registry_backed(tmp_path):
@@ -1667,6 +1789,17 @@ def test_builder_pane_type_key(tmp_path):
                       {"agent": "builder", "text": "hello"})[0] == 200
         assert _qpost(h, "/api/key?swarm=alpha", "sekret",
                       {"agent": "builder", "key": "Enter"})[0] == 200
+
+
+def test_builder_type_swarmerror(tmp_path):
+    registry.create_swarm("alpha")
+    def boom(*a, **k):
+        raise ui.tmux.SwarmError("no builder session")
+    with mock_tmux(), mock.patch.object(ui.tmux, "paste_into", boom), _rb_server() as h:
+        code, body = _qpost(h, "/api/type?swarm=alpha", "sekret",
+                            {"agent": "builder", "text": "hi"})
+        assert code == 400
+        assert "no builder session" in json.loads(body)["error"]
 
 
 def test_api_swarms_build_bad_json(tmp_path):

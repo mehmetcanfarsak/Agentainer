@@ -61,6 +61,7 @@ import mail  # noqa: E402
 import tmux  # noqa: E402
 import turn  # noqa: E402
 import reconcile  # noqa: E402
+import reset as resetmod  # noqa: E402
 
 
 API_ROOT = "https://api.telegram.org"
@@ -444,6 +445,7 @@ HELP = (
     "/down [agent] — stop all / one\n"
     "/restart [agent] — restart all / one\n"
     "/reconcile — make running set match the config\n"
+    "/reset [full] — start over: clear state (soft) or also delete work files (full)\n"
     "\n"
     "Mail & user:\n"
     "/to <agent> <msg> — send mail as the user (or reply to a mirrored message)\n"
@@ -559,11 +561,13 @@ def _cmd_reconcile(cfg, arg):
 def _cmd_status(cfg, arg):
     lines = [f"🐝 {cfg.name}"]
     for a in cfg.agents:
-        running = tmux.session_exists(a.session)
+        alive = tmux.session_exists(a.session)
+        exited = alive and tmux.agent_exited(a.session, a.name)
+        running = alive and not exited
         busy = running and turn.busy_info(cfg, a) is not None
         depth = len(mail.queued_files(cfg, a.name))
-        dot = "🟢" if running else "⚪"
-        state = "busy" if busy else ("idle" if running else "down")
+        dot = "🟢" if running else ("🔴" if exited else "⚪")
+        state = "busy" if busy else ("idle" if running else ("exited" if exited else "down"))
         tail = f" · {depth} queued" if depth else ""
         lines.append(f"{dot} {a.name} [{a.type}] {state}{tail}")
     lines.append(f"you: {'available' if cfg.user_available else 'away'}")
@@ -676,7 +680,11 @@ def _cmd_type(cfg, arg):
     if len(parts) != 2:
         raise TelegramError("usage: /type <agent> <text>")
     a = cfg.get(parts[0])
-    tmux.paste_into(cfg, a.session, parts[1])
+    res = mail.type_into_pane(cfg, a.name, parts[1])
+    if res.get("staged"):
+        # Agent is mid-turn; a submit Enter would be swallowed. The supervisor
+        # types+submits this the moment the turn ends -- tell the operator so.
+        return f"⌨️ {a.name} is busy -- queued your input; it sends when the turn ends"
     return f"⌨️ typed into {a.name}"
 
 
@@ -794,6 +802,23 @@ def _cmd_apply(cfg, arg):
     return f"📦 applied {name}: {', '.join(added)}"
 
 
+def _cmd_reset(cfg, arg):
+    """``/reset`` (soft) or ``/reset full`` (hard wipe). Refuses while agents run."""
+    level = "full" if arg.strip().lower() == "full" else "state"
+    try:
+        resetmod.guard_stopped(cfg)
+        result = resetmod.reset(cfg, level)
+    except resetmod.ResetError as exc:
+        raise TelegramError(str(exc))
+    n = len(result["removed"])
+    label = "🧹 full wipe" if level == "full" else "🧹 reset"
+    lines = [f"{label}: removed {n} path(s)" + (" — swarm is clean" if not n else "")]
+    lines.extend(f"⚠️ {w}" for w in result["warnings"])
+    if level == "state":
+        lines.append("work files kept; next /up starts fresh conversations")
+    return "\n".join(lines)
+
+
 def _cmd_help(cfg, arg):
     return HELP
 
@@ -809,6 +834,7 @@ _COMMANDS = {
     "add": _cmd_add, "edit": _cmd_edit, "remove": _cmd_remove,
     "set": _cmd_set, "mirror": _cmd_mirror,
     "templates": _cmd_templates, "apply": _cmd_apply,
+    "reset": _cmd_reset,
 }
 
 

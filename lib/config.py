@@ -156,6 +156,65 @@ def _parse_pings(raw, agent_name: str) -> list:
     return rules
 
 
+def _as_dict(value: Any, ctx: str) -> dict:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(f"{ctx}: expected a mapping")
+    return dict(value)
+
+
+def _parse_files(raw: Any, agent_name: str) -> dict:
+    """Validate an agent's ``files:`` map (relative path -> content).
+
+    Rejects absolute paths and ``..`` traversal so a config can only ever write
+    *inside* the agent's own workdir. Values are coerced to strings.
+    """
+    if raw in (None, ""):
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError(f"agent {agent_name}: `files` must be a mapping of path -> content")
+    out: dict[str, str] = {}
+    for key, val in raw.items():
+        rel = str(key).strip()
+        if not rel:
+            raise ConfigError(f"agent {agent_name}: files has an empty path")
+        p = Path(rel)
+        if p.is_absolute() or os.path.isabs(rel) or ".." in p.parts:
+            raise ConfigError(
+                f"agent {agent_name}: files path {rel!r} must be relative and stay "
+                "inside the workdir (no leading '/' or '..')"
+            )
+        out[rel] = str(val) if val is not None else ""
+    return out
+
+
+def _parse_skills(raw: Any, agent_name: str, cfg_parent: Path) -> list:
+    """Resolve an agent's ``skills:`` (list of local dirs) to absolute Paths.
+
+    Each entry is a directory copied into the agent's ``.claude/skills/`` at
+    launch (a Claude skill). Resolved relative to the config file and validated to
+    exist, so a typo is a load-time ``ConfigError`` rather than a silent no-op.
+    """
+    if raw in (None, ""):
+        return []
+    items = raw if isinstance(raw, list) else [raw]
+    out: list[Path] = []
+    for entry in items:
+        text = str(entry).strip()
+        if not text:
+            continue
+        p = Path(os.path.expanduser(text))
+        if not p.is_absolute():
+            p = (cfg_parent / p).resolve()
+        if not p.is_dir():
+            raise ConfigError(
+                f"agent {agent_name}: skills entry {text!r} is not a directory: {p}"
+            )
+        out.append(p)
+    return out
+
+
 @dataclass
 class Agent:
     name: str
@@ -175,6 +234,14 @@ class Agent:
     create_workdir: bool = True
     ready_probe: bool = True
     busy_check: bool = True
+    # Per-agent coding-agent configuration, materialised into the workdir at
+    # launch by lib/materialize.py (type-aware: CLAUDE.md/AGENTS.md/GEMINI.md,
+    # .mcp.json / codex config.toml, .claude/skills, settings). See docs/configuration.md.
+    mcp: dict = field(default_factory=dict)
+    context: str = ""
+    skills: list = field(default_factory=list)
+    settings: dict = field(default_factory=dict)
+    files: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -561,6 +628,31 @@ def load(path: str | os.PathLike) -> SwarmConfig:
         env.update(_as_str_map(tconf.get("env"), f"agent_types.{atype}.env"))
         env.update(_as_str_map(raw.get("env"), f"agent {name}: env"))
 
+        # Per-agent coding-agent config (materialised at launch). Dict-valued keys
+        # (mcp/settings/files) shallow-merge defaults -> type -> agent so an agent
+        # can add to, not just replace, the shared defaults; `context` is a single
+        # string (agent wins); `skills` concatenate. All validated here so a bad
+        # block is a load-time error, never a silent launch-time surprise.
+        mcp = _as_dict(defaults.get("mcp"), "defaults.mcp")
+        mcp.update(_as_dict(tconf.get("mcp"), f"agent_types.{atype}.mcp"))
+        mcp.update(_as_dict(raw.get("mcp"), f"agent {name}: mcp"))
+
+        settings = _as_dict(defaults.get("settings"), "defaults.settings")
+        settings.update(_as_dict(tconf.get("settings"), f"agent_types.{atype}.settings"))
+        settings.update(_as_dict(raw.get("settings"), f"agent {name}: settings"))
+
+        files = _parse_files(defaults.get("files"), name)
+        files.update(_parse_files(tconf.get("files"), name))
+        files.update(_parse_files(raw.get("files"), name))
+
+        context = raw.get("context")
+        if context is None:
+            context = defaults.get("context")
+        context = str(context or "")
+
+        skills = _parse_skills(defaults.get("skills"), name, cfg_path.parent)
+        skills += _parse_skills(raw.get("skills"), name, cfg_path.parent)
+
         agents.append(
             Agent(
                 name=name,
@@ -598,6 +690,11 @@ def load(path: str | os.PathLike) -> SwarmConfig:
                     f"agent {name}: busy_check",
                 )
                 and capture != "none",
+                mcp=mcp,
+                context=context,
+                skills=skills,
+                settings=settings,
+                files=files,
             )
         )
 

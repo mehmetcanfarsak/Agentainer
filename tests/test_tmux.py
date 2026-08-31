@@ -7,6 +7,7 @@ functions in ``lib/tmux.py`` and drive 100% line coverage of it.
 """
 
 import subprocess
+import types
 from contextlib import contextmanager
 from unittest import mock
 
@@ -86,6 +87,47 @@ def test_pane_text_and_visible_pane(tmp_path):
     with mock_tmux(pane="hello"):
         assert tmux.pane_text("t-A") == "hello"
         assert tmux.visible_pane("t-A") == "hello"
+
+
+def test_agent_exited_detects_sentinel():
+    marker = "prelude\n[agentainer] agent A exited (status 0)\n$ "
+    with mock_tmux(pane=marker):
+        assert tmux.agent_exited("t-A", "A") is True
+    with mock_tmux(pane="A is thinking hard..."):
+        assert tmux.agent_exited("t-A", "A") is False
+    # The sentinel names the agent -- a peer's exit line must not match.
+    with mock_tmux(pane="[agentainer] agent B exited (status 0)"):
+        assert tmux.agent_exited("t-A", "A") is False
+
+
+def test_agent_running_alive_dead_and_zombie():
+    a = types.SimpleNamespace(session="t-A", name="A")
+    # Alive: session up, no exit sentinel in the pane.
+    with mock_tmux(has_session=True, pane="A: working"):
+        assert tmux.agent_running(a) is True
+    # Dead: no session at all.
+    with mock_tmux(has_session=False):
+        assert tmux.agent_running(a) is False
+    # Zombie: session alive but the CLI exited into a fallback shell.
+    with mock_tmux(has_session=True, pane="[agentainer] agent A exited (status 0)"):
+        assert tmux.agent_running(a) is False
+
+
+def test_launcher_exit_sentinel_matches_marker():
+    """The sentinel cli.start_agent prints must start with exit_marker(name).
+
+    Guards against the printf in cli.start_agent and tmux.exit_marker drifting
+    apart -- if they do, agent_exited silently stops detecting real exits.
+    """
+    rendered = "[agentainer] agent worker exited (status 0)"
+    assert rendered.startswith(tmux.exit_marker("worker"))
+    # And the literal cli.start_agent emits carries the same prefix.
+    import inspect
+
+    import cli
+
+    src = inspect.getsource(cli.start_agent)
+    assert "[agentainer] agent %s exited (status %s)" in src
 
 
 def test_visible_pane_error_returns_empty(tmp_path):

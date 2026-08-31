@@ -86,6 +86,7 @@ import mail  # noqa: E402
 import mcp  # noqa: E402
 import reconcile  # noqa: E402
 import registry  # noqa: E402
+import reset as resetmod  # noqa: E402
 import scaffold  # noqa: E402
 import telegram  # noqa: E402
 import tmux  # noqa: E402
@@ -379,6 +380,8 @@ class UIHandler(BaseHTTPRequestHandler):
             self._api_swarms_up(raw)
         elif path == "/api/swarms/down":
             self._api_swarms_down(raw)
+        elif path == "/api/swarms/reset":
+            self._api_swarms_reset(raw)
         elif path == "/api/swarms/register":
             self._api_swarms_register(raw)
         elif path == "/api/swarms/remove":
@@ -452,7 +455,7 @@ class UIHandler(BaseHTTPRequestHandler):
 
     def _swarm_summary(self, cfg) -> dict:
         """One dashboard row for *cfg* (running/total agents + attention)."""
-        running = sum(1 for a in cfg.agents if tmux.session_exists(a.session))
+        running = sum(1 for a in cfg.agents if tmux.agent_running(a))
         udir = cfg.queue_dir / "user"
         attention = (
             len([f for f in udir.iterdir() if f.is_file()]) if udir.exists() else 0
@@ -545,6 +548,33 @@ class UIHandler(BaseHTTPRequestHandler):
             sup.stop_supervisor(cfg)
         self._send_json(200, {"ok": True, "name": name, "stopped": stopped})
 
+    def _api_swarms_reset(self, raw: bytes) -> None:
+        """Start a swarm over: ``level`` ``state`` (soft) or ``full`` (hard wipe).
+
+        Refuses (409) while any agent or the supervisor is running -- the caller
+        must down the swarm first. ``full`` also deletes the agents' work files;
+        the front-end gates it behind a typed-name confirmation.
+        """
+        data = self._json_body(raw)
+        if data is None:
+            return
+        name, cfg = self._resolve_swarm(data)
+        if cfg is None:
+            return
+        level = data.get("level") or "state"
+        try:
+            resetmod.guard_stopped(cfg)
+        except resetmod.ResetError as exc:
+            self._send_json(409, {"error": str(exc)})
+            return
+        try:
+            result = resetmod.reset(cfg, level)
+        except resetmod.ResetError as exc:  # bad level
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._refresh_swarms()
+        self._send_json(200, {"ok": True, "name": name, **result})
+
     def _api_swarms_register(self, raw: bytes) -> None:
         data = self._json_body(raw)
         if data is None:
@@ -634,6 +664,7 @@ class UIHandler(BaseHTTPRequestHandler):
         self._send_json(200, self._telegram_settings_view())
 
     def _api_settings_post(self, raw: bytes) -> None:
+        global _tg_poller
         data = self._json_body(raw)
         if data is None:
             return
@@ -643,7 +674,22 @@ class UIHandler(BaseHTTPRequestHandler):
         active = data.get("active_swarm")
         if active is not None:
             registry.set_active_swarm(active)
-        self._send_json(200, dict(self._telegram_settings_view(), ok=True))
+        # In multi-swarm serve the shared bot is edited HERE (not /api/telegram),
+        # so keep the single control-plane poller matched to the saved settings:
+        # enabling Telegram from the UI must start listening immediately, a token
+        # change must be picked up, and disabling must stop it -- otherwise inbound
+        # replies/commands stay dead until serve is restarted. (Single-config
+        # servers drive the per-swarm poller via /api/telegram and must NOT spawn a
+        # second control poller here -- two pollers would fight over one offset.)
+        polling = _tg_poller is not None
+        if isinstance(tg, dict) and type(self).registry_backed:
+            with _tg_lock:
+                if _tg_poller is not None:
+                    _tg_poller.stop()
+                    _tg_poller = None
+                _tg_poller = telegram.start_control_poller(lambda: registry.load_all())
+                polling = _tg_poller is not None
+        self._send_json(200, dict(self._telegram_settings_view(), ok=True, polling=polling))
 
     def _pending_user_senders(self) -> set:
         """Names of agents whose mail to the ``user`` is still awaiting a reply.
@@ -660,14 +706,19 @@ class UIHandler(BaseHTTPRequestHandler):
                     senders.add(self._parse_msg(f.read_text())["from"])
         return senders
 
-    def _agent_state(self, a, running: bool, busy_state, pending: set):
+    def _agent_state(self, a, running: bool, busy_state, pending: set, exited=False):
         """Collapse the raw signals into one truthful state + its working age.
 
-        Priority: stopped > working > stalled > attention > waiting. ``stalled``
-        is the anomaly ``busy_info`` hides -- a turn that has looked busy past
-        ``busy_timeout_ms`` (the completion signal was lost), which would
-        otherwise silently read as idle.
+        Priority: exited > stopped > working > stalled > attention > waiting.
+        ``exited`` is the crashed-agent case -- the tmux session is alive but the
+        CLI returned and left a fallback shell, which would otherwise read as
+        "stopped" (no session) or, worse, "running" if we only checked the
+        session. ``stalled`` is the anomaly ``busy_info`` hides -- a turn that has
+        looked busy past ``busy_timeout_ms`` (the completion signal was lost),
+        which would otherwise silently read as idle.
         """
+        if exited:
+            return "exited", 0
         if not running:
             return "stopped", 0
         if busy_state is not None:
@@ -698,9 +749,11 @@ class UIHandler(BaseHTTPRequestHandler):
             if inbox_dir.exists()
             else 0
         )
-        running = tmux.session_exists(a.session)
+        alive = tmux.session_exists(a.session)
+        exited = alive and tmux.agent_exited(a.session, a.name)
+        running = alive and not exited
         busy_state = turn.busy_info(cfg, a)
-        state, working_s = self._agent_state(a, running, busy_state, pending)
+        state, working_s = self._agent_state(a, running, busy_state, pending, exited)
         return {
             "name": a.name,
             "type": a.type,
@@ -1112,19 +1165,26 @@ class UIHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "missing agent/text"})
             return
         if to == "builder":
+            # The builder session is an interactive scaffolding CLI, not a
+            # managed agent with turn-state -- type straight in (no staging).
             session = scaffold.builder_session_name(self.cfg)
-        else:
             try:
-                session = self.cfg.get(to).session
-            except Exception:
-                self._send_json(404, {"error": "unknown agent"})
+                ok = tmux.paste_into(self.cfg, session, text)
+            except tmux.SwarmError as exc:
+                self._send_json(400, {"error": str(exc)})
                 return
+            self._send_json(200, {"ok": bool(ok), "agent": to})
+            return
+        if to not in {a.name for a in self.cfg.agents}:
+            self._send_json(404, {"error": "unknown agent"})
+            return
         try:
-            ok = tmux.paste_into(self.cfg, session, text)
+            res = mail.type_into_pane(self.cfg, to, text)
         except tmux.SwarmError as exc:
             self._send_json(400, {"error": str(exc)})
             return
-        self._send_json(200, {"ok": bool(ok), "agent": to})
+        # staged == typed into a busy agent; the supervisor submits it on idle.
+        self._send_json(200, {"agent": to, **res})
 
     def _api_key(self, raw: bytes) -> None:
         data = self._json_body(raw)
@@ -1404,6 +1464,11 @@ class UIHandler(BaseHTTPRequestHandler):
         # loader validates each cron (a bad one is surfaced as 400, not a no-op).
         if isinstance(data.get("pings"), list) and data["pings"]:
             extra["pings"] = data["pings"]
+        # Per-agent coding-agent config (materialised at launch). Only non-empty
+        # values are written, so a fresh agent's config stays clean.
+        for k in ("mcp", "context", "skills", "settings", "files"):
+            if data.get(k) not in (None, "", {}, []):
+                extra[k] = data[k]
         try:
             new_cfg = reconcile.add_agent(
                 self.cfg,

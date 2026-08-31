@@ -199,6 +199,18 @@ automatically upgraded to `captur: hook` at load time, because `none` would stri
 the agent's only turn-completion signal and leave the orchestrator blind to a
 silent turn (which can wedge the whole swarm). A warning is emitted.
 
+**Compaction re-presentation (claude):** when a claude agent **compacts** its
+context (auto or `/compact`), resumes, or is cleared, the summarised history
+drops the last nudge — the exact `inbox/`/`outbox/`/`read/` paths and the
+protocol — so a model left "holding" an unread message may no longer know how to
+act on it. `agentainer up` therefore installs a claude **`SessionStart`** hook
+next to the `Stop` hook; it re-presents the agent's current inbox message the
+instant the session restarts (sources `compact`/`resume`/`clear`; `startup` is
+ignored so the launch prompt isn't doubled). Recovery is immediate and does not
+depend on a supervisor tick — though the liveness supervisor's `present_current`
+re-nudge remains the fallback (and is the **only** recovery for codex, which has
+no compaction hook).
+
 ### `role` — string, default `""`
 The agent's standing instructions — its persona and what it should do. This is the
 v2 field. `first_prompt` (and `first_prompt_file`) are **deprecated aliases** and
@@ -349,6 +361,59 @@ coerced to strings.
 If `true`, Agentainer creates the `workdir` (and `mail_dir`) when missing. If
 `false` and the directory does not exist, load fails (create it yourself or allow
 Agentainer to).
+
+### Per-agent coding-agent config — `mcp` / `context` / `skills` / `settings` / `files` {#coding-agent-config}
+
+Each agent can declare the configuration its underlying coding-agent CLI reads.
+Agentainer **materialises** these into the agent's `workdir` just before launch
+(and on every resume), so a swarm ships fully configured from a single YAML. The
+mapping is **type-aware** — the same logical key lands in the right file for the
+CLI:
+
+| key | what it is | claude | codex | gemini | hermes |
+|-----|------------|--------|-------|--------|--------|
+| `context` | standing project-context file (string) | `CLAUDE.md` | `AGENTS.md` | `GEMINI.md` | `AGENTS.md` |
+| `mcp` | MCP servers `{name: {command, args, env, …}}` | `.mcp.json` (`mcpServers`) | `[mcp_servers.*]` in `.codex/config.toml` | `.gemini/settings.json` | — (warned) |
+| `settings` | CLI settings (mapping) | merged into `.claude/settings.json` | — (warned) | `.gemini/settings.json` | — (warned) |
+| `skills` | local skill directories (list) copied into | `.claude/skills/<name>/` | — (warned) | — (warned) | — (warned) |
+| `files` | `{relative_path: content}` written verbatim | ✓ | ✓ | ✓ | ✓ |
+
+- **Claude is fully supported.** For other types, `context` and `files` always
+  work and MCP is best-effort; an unsupported key emits a startup warning (it is
+  never fatal) so you know to use `files:` instead.
+- **Merge, never clobber.** `settings` merges into the `.claude/settings.json`
+  that already holds Agentainer's Stop/SessionStart hooks; `mcp` merges into any
+  existing `.mcp.json`/`config.toml`. Re-running `up`/resume is idempotent.
+- **`files` is sandboxed.** Paths must be relative and stay inside the workdir —
+  a leading `/` or a `..` component is a load-time error.
+- **Merge order** (like `env`): `defaults` → `agent_types.<type>` → per-agent for
+  the mapping keys (`mcp`/`settings`/`files`); `context` is agent-wins; `skills`
+  concatenate.
+
+```yaml
+agents:
+  - name: lead
+    type: claude
+    command: "claude --dangerously-skip-permissions"
+    context: |
+      # Project context
+      Python service. Prefer stdlib. Every change needs a test.
+    mcp:
+      filesystem:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    settings:
+      permissions: {defaultMode: acceptEdits}
+    skills:
+      - ./skills/secrets-scan      # copied to .claude/skills/secrets-scan/
+    files:
+      REVIEW-CHECKLIST.md: |
+        - [ ] no hard-coded secrets
+```
+
+See `examples/mcp-configured.yaml` for a complete swarm. These fields are editable
+from all four control planes: the YAML, the UI agent editor ("Coding-agent
+config"), the MCP `configure_agent` tool, and (read-visibility) Telegram.
 
 ### `ready_probe` — bool, default `true`
 Enable the per-agent health probe for the "silent but alive" case the supervisor

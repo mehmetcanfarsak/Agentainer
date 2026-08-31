@@ -100,7 +100,9 @@ back both as JSON text and as MCP `structuredContent`.
 | `start_agent` / `stop_agent` | Start / stop one agent's tmux session (conversation kept for resume). |
 | `up_swarm` / `down_swarm` | Bring a whole swarm up / down. |
 | `create_swarm` | Scaffold and register a brand-new swarm, optionally from an example template. |
+| `reset_swarm` | Start a swarm over: `level: "state"` (clear conversations/mail/logs, keep work) or `"full"` (also delete workspace files). Refuses while agents run. |
 | `add_agent` / `remove_agent` | Add or remove an agent in a swarm's config. |
+| `configure_agent` | Set an agent's coding-agent config (`mcp` / `context` / `skills` / `settings` / `files`); materialised into its workdir on next (re)start. |
 
 New capabilities are added here as they land on the other surfaces; this table is
 the contract.

@@ -118,7 +118,12 @@ Everything below is served by `lib/ui.py` and driven by the single-page app.
 root, whether the `user` mailbox is available, and whether the liveness
 supervisor is alive. For each agent it reports:
 
-- **`running`** — is its tmux session up?
+- **`running`** — is the agent's CLI actually alive? (its tmux session exists
+  **and** the launch wrapper's exit sentinel is absent — a session whose CLI has
+  exited into the fallback shell reads as `exited`, not running)
+- **`state`** — the collapsed status: `working` / `waiting` / `attention` /
+  `stalled` / `exited` (session alive but the CLI has crashed/quit — one-click
+  **Restart** to relaunch) / `stopped` (no session)
 - **`busy`** — is a turn in flight right now? (from `turn.busy_info`)
 - **`queue_depth`** — messages waiting to be released into its inbox
 - **`unread`** — messages currently sitting in its inbox
@@ -162,11 +167,20 @@ Two distinct write paths, deliberately separate:
   `mail.send_as_user` — it delivers as the virtual **`user`** mailbox and goes
   through the *normal* mailroom (routing, queueing, nudge). This is what the
   reply box in a thread does. Correctness is unchanged from a CLI `user send`.
-- **Direct pane input (raw).** `POST /api/type` with `{"agent","text"}` pastes
-  straight into the agent's tmux pane (`tmux.paste_into`), **bypassing the
-  mailroom entirely**. `POST /api/key` with `{"agent","key"}` sends a single
-  key (`Escape`, `C-c`, …). These are power-user escape hatches — use them to
-  unstick a modal or interrupt a runaway turn, not for normal messaging.
+- **Direct pane input (raw).** `POST /api/type` with `{"agent","text"}` types
+  straight into the agent's tmux pane (`mail.type_into_pane`), **bypassing the
+  mailroom entirely**. If the agent is **mid-turn**, the text is *staged* rather
+  than typed — a coding-agent CLI buffers text typed while it's busy but swallows
+  the submit Enter, so the input would otherwise sit unsent in the box and never
+  reach the model. Staged input is pasted + submitted by the liveness supervisor
+  the instant the turn ends (it takes priority over queued mail), and the
+  response reports `{"staged": true}` so the UI shows *"queued — sends when the
+  turn ends."* When the agent is idle it's submitted immediately. `POST /api/key`
+  with `{"agent","key"}` sends a single key (`Escape`, `C-c`, …). These are
+  power-user escape hatches — use them to unstick a modal or interrupt a runaway
+  turn, not for normal messaging. *(Staging needs a running
+  `serve`/`supervise` heartbeat to flush; without one, idle submission still
+  works but busy-staged input waits for the next start.)*
 
 ### The user mailbox + availability toggle
 
@@ -198,6 +212,26 @@ next request sees the change:
   (`reconcile.start_one` / `reconcile.stop_one`) without editing the config.
 - `GET`/`POST /api/config` — read the raw settings/agents, or persist swarm-level
   settings (`reconcile.edit_swarm`).
+
+#### Coding-agent config in the agent form
+
+The add/edit agent form has a collapsible **Coding-agent config** section for
+declaring what the agent's CLI reads: a **Context** file, **MCP servers** (JSON),
+**Settings** (JSON), **Skills** (one directory per line), and **Extra files**
+(JSON path → content). These are written into `agentainer.yaml` and
+[materialised into the agent's workdir](configuration.md#coding-agent-config) on
+its next start — type-aware and merge-not-clobber. Invalid JSON is caught before
+save. Structured/multiline values now round-trip through the YAML writer (a `role`
+or `context` spanning several lines is emitted as a `|` block scalar).
+
+### Reset / start over
+
+Each card on the **swarms dashboard** has a **Reset** button that opens a modal
+with two levels: **Reset state** (clear conversations, mail, queue & logs; keep
+the agents' work files) and **Wipe everything** (also delete the agents' workspace
+files). The hard wipe requires typing the swarm name to confirm. Both post to
+`POST /api/swarms/reset` (`level: "state" | "full"`) and **refuse with a `409`
+while the swarm is running** — stop it first. The config file is always kept.
 
 Removing an agent that a peer still lists in `can_talk_to` would leave the config
 invalid; the server surfaces that as a `400` rather than writing a broken file.

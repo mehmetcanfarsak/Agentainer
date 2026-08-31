@@ -48,6 +48,7 @@ mailroom route mail safely. Swap each `command` for a real agent CLI to run for 
 - `validate` — resolve and print the config; launch nothing.
 - `up` — create dirs + mailbox folders, install per-type turn-detection, open one tmux session per agent, send the role.
 - `down` / `restart` — tear down / down+up.
+- `reset [--full]` — start over: clear Agentainer state (conversations/mail/queue/logs, keep work files); `--full` also deletes each agent's workspace files (config always kept). Refuses while agents run. On all four planes (UI Reset button with typed-name confirm for full, Telegram `/reset [full]`, MCP `reset_swarm`).
 - `status` / `attach` / `logs` — health, attach, durable JSONL log (`-f` follows).
 - `send` — send a `user` message into the swarm (`--to <agent>`).
 - `user` — toggle `user` availability (`available`/`away`/`inbox`/`send`).
@@ -60,6 +61,7 @@ mailroom route mail safely. Swap each `command` for a real agent CLI to run for 
 - `edit <name> -s key=value` — edit an agent's fields and reconcile.
 - `remove <name>` — remove an agent and stop its session.
 - `reconcile` — start agents missing from the running set / stop orphaned sessions.
+- **Per-agent coding-agent config** — an agent may declare `mcp:` (MCP servers), `context:` (project-context file → `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` by type), `skills:` (local dirs → `.claude/skills/`), `settings:` (merged into the CLI settings file), and `files:` (relative-path → content). Type-aware, merge-not-clobber, materialised into each workdir at launch. Editable via YAML, the UI agent editor, and the MCP `configure_agent` tool. See `docs/configuration.md` + `examples/mcp-configured.yaml`.
 
 ## 🖥️ Control-plane UI (P2–P3)
 `agentainer serve -c swarm.yaml --port 8080 --token <secret>` serves a zero-dependency

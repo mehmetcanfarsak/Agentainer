@@ -497,6 +497,26 @@ def test_cmd_down(cfg, net, monkeypatch):
     assert "no agents were running" in _cmd(cfg, net, "/down")
 
 
+def test_cmd_reset(cfg, net, monkeypatch):
+    monkeypatch.setattr(telegram.resetmod, "guard_stopped", lambda c: None)
+    (cfg.runtime / "logs").mkdir(parents=True, exist_ok=True)
+    out = _cmd(cfg, net, "/reset")
+    assert "reset" in out and "removed" in out and "work files kept" in out
+    # full wipe wording
+    monkeypatch.setattr(telegram.resetmod, "reset",
+                        lambda c, level: {"level": level, "removed": ["x"], "warnings": ["kept cfg"]})
+    out2 = _cmd(cfg, net, "/reset full")
+    assert "full wipe" in out2 and "kept cfg" in out2
+
+
+def test_cmd_reset_refused(cfg, net, monkeypatch):
+    def boom(c):
+        raise telegram.resetmod.ResetError("bring the swarm down first")
+    monkeypatch.setattr(telegram.resetmod, "guard_stopped", boom)
+    out = _cmd(cfg, net, "/reset")
+    assert "⚠️" in out and "down first" in out
+
+
 def test_cmd_restart(cfg, net, monkeypatch):
     monkeypatch.setattr(telegram.reconcile, "stop_one", lambda c, n: True)
     monkeypatch.setattr(telegram.reconcile, "start_one", lambda c, n: True)
@@ -527,6 +547,16 @@ def test_cmd_status(cfg, net, monkeypatch):
     assert "you: away" in out
     cfg.user_available = True
     assert "you: available" in _cmd(cfg, net, "/status")
+
+
+def test_cmd_status_reports_exited(cfg, net, monkeypatch):
+    # Session alive but the CLI exited -> a red dot + "exited", not "idle"/"down".
+    monkeypatch.setattr(telegram.tmux, "session_exists", lambda s: s.endswith("alice"))
+    monkeypatch.setattr(telegram.tmux, "agent_exited", lambda s, n: n == "alice")
+    monkeypatch.setattr(telegram.mail, "queued_files", lambda c, n: [])
+    out = _cmd(cfg, net, "/status")
+    assert "🔴 alice" in out and "exited" in out
+    assert "⚪ bob" in out and "down" in out
 
 
 def test_cmd_agents(cfg, net):
@@ -617,10 +647,25 @@ def test_cmd_available_away(cfg, net, monkeypatch):
 
 def test_cmd_type(cfg, net, monkeypatch):
     rec = []
-    monkeypatch.setattr(telegram.tmux, "paste_into", lambda c, s, t: rec.append((s, t)))
+    monkeypatch.setattr(telegram.tmux, "paste_into",
+                        lambda c, s, t: (rec.append((s, t)), True)[1])
+    # Idle agent -> typed + submitted now.
     assert "typed into alice" in _cmd(cfg, net, "/type alice hello world")
     assert rec[0][1] == "hello world"
     assert "usage: /type" in _cmd(cfg, net, "/type alice")
+
+
+def test_cmd_type_busy_stages(cfg, net, monkeypatch):
+    # Agent mid-turn: the text is staged (Enter would be swallowed), not typed.
+    import turn as turnmod
+    turnmod.mark_turn_started(cfg, "alice", "user")
+    called = []
+    monkeypatch.setattr(telegram.tmux, "paste_into",
+                        lambda c, s, t: called.append(t) or True)
+    out = _cmd(cfg, net, "/type alice hold this")
+    assert "busy" in out and "queued" in out
+    assert called == []  # never typed into the busy pane
+    assert mail._load_staged(cfg, "alice") == ["hold this"]
 
 
 def test_cmd_key(cfg, net, monkeypatch):

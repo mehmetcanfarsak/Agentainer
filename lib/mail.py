@@ -464,6 +464,109 @@ def present_current(cfg: SwarmConfig, agent_name: str) -> bool:
     return True
 
 
+# --------------------------------------------------------------------------
+# direct-to-pane user input (bypasses the mailroom -- live operator intervention)
+# --------------------------------------------------------------------------
+#
+# The UI/Telegram "type into the session" feature lets the operator poke an
+# agent's pane directly. The footgun (v1 + v2): a coding-agent CLI (claude,
+# codex, ...) BUFFERS typed text while it is mid-turn but SWALLOWS the submit
+# Enter -- so text typed into a busy pane lands in the input box and is never
+# submitted; when the turn ends it sits there unseen. We fix it the same way the
+# mailroom fixes delivery: never rely on timing. If the agent is busy we do NOT
+# type into the doomed pane at all -- we STAGE the text in a per-agent queue and
+# let the liveness supervisor paste+submit it (fresh, via the confirmed paste
+# stack) the moment the agent goes idle. Staged input is a live intervention, so
+# the supervisor flushes it BEFORE presenting queued mail.
+
+STAGED_SUFFIX = ".staged.json"  # per-agent queue of pane input typed while busy
+
+
+def _staged_path(cfg: SwarmConfig, agent_name: str) -> Path:
+    return cfg.run_dir / f"{agent_name}{STAGED_SUFFIX}"
+
+
+def _load_staged(cfg: SwarmConfig, agent_name: str) -> list[str]:
+    try:
+        data = json.loads(_staged_path(cfg, agent_name).read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [str(x) for x in data] if isinstance(data, list) else []
+
+
+def _save_staged(cfg: SwarmConfig, agent_name: str, items: list[str]) -> None:
+    path = _staged_path(cfg, agent_name)
+    if items:
+        cfg.run_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(items))
+    else:
+        path.unlink(missing_ok=True)
+
+
+def stage_input(cfg: SwarmConfig, agent_name: str, text: str) -> None:
+    """Queue *text* to be typed+submitted into the pane when the agent next idles."""
+    with lock.file_lock(cfg, agent_name, "staged"):
+        items = _load_staged(cfg, agent_name)
+        items.append(text)
+        _save_staged(cfg, agent_name, items)
+
+
+def type_into_pane(cfg: SwarmConfig, agent_name: str, text: str) -> dict:
+    """Direct-to-pane operator input that survives a busy agent.
+
+    If the agent is mid-turn, the submit Enter would be swallowed, so the text is
+    *staged* (not typed into the doomed pane) and the supervisor submits it when
+    the turn ends. If the agent is idle, it is pasted and submitted now, and the
+    turn is marked started so busy-detection stays accurate (otherwise the
+    supervisor could clobber the resulting turn with a nudge). Returns
+    ``{"ok", "submitted", "staged"}``.
+    """
+    agent = cfg.get(agent_name)
+    if turn.busy_info(cfg, agent) is not None:
+        stage_input(cfg, agent_name, text)
+        return {"ok": True, "submitted": False, "staged": True}
+    ok = tmux.paste_into(cfg, agent.session, text)
+    if ok:
+        turn.mark_turn_started(cfg, agent_name, "user")
+        log.log_event(cfg, agent_name, "typed", by="user")
+        return {"ok": True, "submitted": True, "staged": False}
+    # Idle but the paste could not be confirmed -- stage it so the supervisor
+    # retries on the next tick rather than dropping the operator's input.
+    stage_input(cfg, agent_name, text)
+    return {"ok": False, "submitted": False, "staged": True}
+
+
+def flush_staged_input(cfg: SwarmConfig, agent_name: str) -> bool:
+    """Submit one staged pane input if the agent is idle (supervisor idle branch).
+
+    Pastes the oldest staged line fresh through the confirmed paste stack and,
+    on success, marks the turn started and drops it from the queue. A paste that
+    can't be confirmed leaves the item in place to retry next tick (the same
+    "retry on the next tick" promise the nudge relies on). Returns True when a
+    turn was submitted (the caller should let it run and skip other pushes).
+    """
+    items = _load_staged(cfg, agent_name)
+    if not items:
+        return False
+    agent = cfg.get(agent_name)
+    if turn.busy_info(cfg, agent) is not None:
+        return False
+    if not tmux.paste_into(cfg, agent.session, items[0]):
+        return False
+    turn.mark_turn_started(cfg, agent_name, "user")
+    log.log_event(cfg, agent_name, "typed", by="user")
+    with lock.file_lock(cfg, agent_name, "staged"):
+        remaining = _load_staged(cfg, agent_name)
+        # Drop the item we just submitted (guard against a concurrent re-stage
+        # having reordered the list: match by value, else pop the head).
+        if remaining and remaining[0] == items[0]:
+            remaining = remaining[1:]
+        elif items[0] in remaining:
+            remaining.remove(items[0])
+        _save_staged(cfg, agent_name, remaining)
+    return True
+
+
 def route_outbound(cfg: SwarmConfig, sender: str, recipient: str, body: str) -> str:
     """Route one outbound message from *sender* to *recipient*. Returns one of
     ``delivered`` / ``bounce`` / ``rate-limited`` / ``user-held``.

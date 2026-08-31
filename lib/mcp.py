@@ -31,6 +31,7 @@ import sys
 import mail
 import reconcile
 import registry
+import reset as resetmod
 import tmux
 import turn
 
@@ -174,7 +175,7 @@ def _agent_prop() -> dict:
 def _t_list_swarms(swarms, args):
     out = []
     for cfg in swarms.values():
-        running = sum(1 for a in cfg.agents if tmux.session_exists(a.session))
+        running = sum(1 for a in cfg.agents if tmux.agent_running(a))
         out.append(
             {
                 "name": cfg.name,
@@ -198,13 +199,16 @@ def _t_swarm_status(swarms, args):
     cfg = _resolve(swarms, args.get("swarm"))
     agents = []
     for a in cfg.agents:
-        running = tmux.session_exists(a.session)
-        busy = turn.busy_info(cfg, a) is not None
+        alive = tmux.session_exists(a.session)
+        exited = alive and tmux.agent_exited(a.session, a.name)
+        running = alive and not exited
+        busy = running and turn.busy_info(cfg, a) is not None
         agents.append(
             {
                 "name": a.name,
                 "type": a.type,
                 "running": running,
+                "exited": exited,
                 "busy": busy,
                 "unread": _count_files(cfg.mail_paths(a).inbox),
                 "queue_depth": _count_files(cfg.queue_dir / a.name),
@@ -413,6 +417,28 @@ def _t_down_swarm(swarms, args):
 
 
 @tool(
+    "reset_swarm",
+    "Start a swarm over. level 'state' (default) clears Agentainer data "
+    "(conversations, mail, queue, logs) but keeps the agents' work files; level "
+    "'full' also deletes each agent's workspace files (config is always kept). "
+    "Refuses while any agent is running -- down the swarm first.",
+    {
+        "swarm": _swarm_prop(),
+        "level": {"type": "string", "description": "'state' (soft) or 'full' (hard wipe)"},
+    },
+)
+def _t_reset_swarm(swarms, args):
+    cfg = _resolve(swarms, args.get("swarm"))
+    level = args.get("level") or "state"
+    try:
+        resetmod.guard_stopped(cfg)
+        result = resetmod.reset(cfg, level)
+    except resetmod.ResetError as exc:
+        raise McpError(str(exc))
+    return {"ok": True, "swarm": cfg.name, **result}
+
+
+@tool(
     "create_swarm",
     "Scaffold and register a brand-new swarm. Optionally seed it from a bundled "
     "example template (see the 'name' fields from list_examples in the UI).",
@@ -468,6 +494,36 @@ def _t_add_agent(swarms, args):
         raise McpError(str(exc))
     mail.init_mailboxes(new_cfg)
     return {"ok": True, "swarm": cfg.name, "name": args["name"]}
+
+
+@tool(
+    "configure_agent",
+    "Set an agent's coding-agent config in the YAML: MCP servers, its context file "
+    "(CLAUDE.md/AGENTS.md/GEMINI.md by type), Claude skills, CLI settings, and extra "
+    "files. Only the fields you pass are changed; they are materialised into the "
+    "agent's workdir on its next (re)start.",
+    {
+        "swarm": _swarm_prop(),
+        "agent": _agent_prop(),
+        "mcp": {"type": "object", "description": "MCP servers {name: {command, args, env, ...}}"},
+        "context": {"type": "string", "description": "project context file body"},
+        "skills": {"type": "array", "items": {"type": "string"},
+                   "description": "local skill directories (claude)"},
+        "settings": {"type": "object", "description": "CLI settings, merged into the settings file"},
+        "files": {"type": "object", "description": "extra files {relative_path: content}"},
+    },
+)
+def _t_configure_agent(swarms, args):
+    cfg = _resolve(swarms, args.get("swarm"))
+    a = _agent(cfg, args.get("agent"))
+    fields = {k: args[k] for k in ("mcp", "context", "skills", "settings", "files") if k in args}
+    if not fields:
+        raise McpError("pass at least one of mcp/context/skills/settings/files")
+    try:
+        reconcile.edit_agent(cfg, a.name, **fields)
+    except Exception as exc:
+        raise McpError(str(exc))
+    return {"ok": True, "swarm": cfg.name, "agent": a.name, "configured": sorted(fields)}
 
 
 @tool(

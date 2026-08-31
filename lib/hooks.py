@@ -129,6 +129,23 @@ def install_claude_hook(agent: Agent) -> None:
     ]
     stop_hooks.append(entry)
     hooks["Stop"] = stop_hooks
+
+    # SessionStart hook: fires on startup/resume/clear/compact. A compaction
+    # wipes the last nudge (mailbox paths + protocol) from the model's context,
+    # so we re-present its current inbox message the instant the session
+    # restarts rather than waiting for a supervisor tick. No "matcher" (a matcher
+    # can keep the interactive TUI from ever firing the hook, same as Stop); the
+    # `source` is filtered in `agentainer hook` (startup is ignored there).
+    ss_cmd = str(HOOKS_DIR / "claude_sessionstart.sh")
+    ss_entry = {"hooks": [{"type": "command", "command": ss_cmd}]}
+    ss_hooks = [
+        h
+        for h in hooks.get("SessionStart", [])
+        if ss_cmd not in json.dumps(h)  # drop our own stale entry, keep the user's
+    ]
+    ss_hooks.append(ss_entry)
+    hooks["SessionStart"] = ss_hooks
+
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
 
 

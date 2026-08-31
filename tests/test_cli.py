@@ -295,6 +295,26 @@ def test_start_agent_creates_workdir(monkeypatch, tmp_path):
     assert agent.workdir.is_dir()
 
 
+def test_start_agent_materialises_config_and_warns(monkeypatch, tmp_path, capsys):
+    # A claude agent with `context` writes CLAUDE.md; a warning path is exercised
+    # by giving it a hermes-only-unsupported key (mcp) so materialize warns.
+    cfg = load_swarm(
+        tmp_path,
+        "  - name: dev\n"
+        "    type: hermes\n"
+        "    command: hermes\n"
+        "    capture: none\n"
+        "    can_talk_to: [user]\n"
+        "    context: You are dev.\n"
+        "    mcp: {gh: {command: x}}\n",
+    )
+    agent = cfg.get("dev")
+    with mock_tmux(has_session=False):
+        cli.start_agent(cfg, agent)
+    assert (agent.workdir / "AGENTS.md").read_text().strip() == "You are dev."
+    assert "no known config location" in capsys.readouterr().err
+
+
 # --------------------------------------------------------------------------
 # up / down / restart
 # --------------------------------------------------------------------------
@@ -513,7 +533,7 @@ def test_remove_session_clears_runtime_and_mailboxes(monkeypatch, tmp_path):
     (mp.inbox / "m.txt").write_text("stale mail")
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
     monkeypatch.setattr(cli.tmux, "session_exists", lambda s: False)
-    monkeypatch.setattr(cli, "_supervisor_alive", lambda c: False)
+    monkeypatch.setattr(cli.resetmod, "_supervisor_alive", lambda c: False)
 
     assert cfg.runtime.exists()
     assert (mp.inbox / "m.txt").exists()
@@ -535,7 +555,7 @@ def test_remove_session_refuses_when_supervisor_alive(monkeypatch, tmp_path):
     cfg = build(tmp_path, GENERAL_AGENTS)
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
     monkeypatch.setattr(cli.tmux, "session_exists", lambda s: False)
-    monkeypatch.setattr(cli, "_supervisor_alive", lambda c: True)
+    monkeypatch.setattr(cli.resetmod, "_supervisor_alive", lambda c: True)
     with pytest.raises(SystemExit):
         cli.main(["remove-session", "-c", str(cfg.path)])
 
@@ -544,9 +564,63 @@ def test_remove_session_nothing(monkeypatch, tmp_path, capsys):
     cfg = build(tmp_path, GENERAL_AGENTS)
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
     monkeypatch.setattr(cli.tmux, "session_exists", lambda s: False)
-    monkeypatch.setattr(cli, "_supervisor_alive", lambda c: False)
+    monkeypatch.setattr(cli.resetmod, "_supervisor_alive", lambda c: False)
     assert not cfg.runtime.exists()
     assert cli.main(["remove-session", "-c", str(cfg.path)]) == 0
+    assert "nothing to remove" in capsys.readouterr().err
+
+
+def test_reset_soft_keeps_work(monkeypatch, tmp_path):
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    (cfg.runtime / "logs").mkdir(parents=True, exist_ok=True)
+    wd = cfg.get("orchestrator").workdir
+    wd.mkdir(parents=True, exist_ok=True)
+    (wd / "work.txt").write_text("keep me")
+    monkeypatch.setattr(cli.resetmod, "guard_stopped", lambda c: None)
+    assert cli.main(["reset", "-c", str(cfg.path)]) == 0
+    assert not cfg.runtime.exists()
+    assert (wd / "work.txt").exists()
+
+
+def test_reset_full_wipes_work(monkeypatch, tmp_path, capsys):
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    wd = cfg.get("orchestrator").workdir
+    wd.mkdir(parents=True, exist_ok=True)
+    (wd / "work.txt").write_text("delete me")
+    monkeypatch.setattr(cli.resetmod, "guard_stopped", lambda c: None)
+    assert cli.main(["reset", "-c", str(cfg.path), "--full"]) == 0
+    assert not (wd / "work.txt").exists()
+    assert "full wipe" in capsys.readouterr().err
+
+
+def test_reset_full_warns_on_outside_root_workdir(monkeypatch, tmp_path, capsys):
+    # A workdir outside the swarm root is kept (not wiped) and surfaces a warning.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("x")
+    cfg = build(
+        tmp_path,
+        f"  - {{name: dev, type: claude, capture: none, "
+        f"can_talk_to: [user], workdir: {outside}}}\n",
+    )
+    monkeypatch.setattr(cli.resetmod, "guard_stopped", lambda c: None)
+    assert cli.main(["reset", "-c", str(cfg.path), "--full"]) == 0
+    assert (outside / "keep.txt").exists()
+    assert "outside the swarm root" in capsys.readouterr().err
+
+
+def test_reset_refuses_while_running(monkeypatch, tmp_path):
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(cli.tmux, "session_exists", lambda s: True)
+    with pytest.raises(SystemExit):
+        cli.main(["reset", "-c", str(cfg.path)])
+
+
+def test_reset_nothing_when_clean(monkeypatch, tmp_path, capsys):
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    monkeypatch.setattr(cli.resetmod, "guard_stopped", lambda c: None)
+    assert cli.main(["reset", "-c", str(cfg.path)]) == 0
     assert "nothing to remove" in capsys.readouterr().err
 
 
@@ -621,6 +695,16 @@ def test_status_down(monkeypatch, tmp_path):
     monkeypatch.delitem(sys.modules, "supervisor", raising=False)
     with mock_tmux(has_session=False):
         assert cli.main(["status", "-c", str(cfg.path)]) == 0
+
+
+def test_status_exited(monkeypatch, tmp_path, capsys):
+    # Session alive but the pane shows the exit sentinel -> "exited", not "up".
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    monkeypatch.delitem(sys.modules, "supervisor", raising=False)
+    with mock_tmux(has_session=True, pane="[agentainer] agent orchestrator exited (status 0)"):
+        assert cli.main(["status", "-c", str(cfg.path)]) == 0
+    out = capsys.readouterr().out
+    assert "orchestrator" in out and "exited" in out
 
 
 def test_status_unknown_agent(monkeypatch, tmp_path):
@@ -939,6 +1023,36 @@ def test_hook_claude_bad_json(monkeypatch, tmp_path):
     _hook_env(monkeypatch, cfg, "orchestrator")
     with mock.patch.object(cli.sys, "stdin", io.StringIO("not json")):
         assert cli.main(["hook", "claude"]) == 0
+
+
+def test_hook_claude_sessionstart_compact_presents(monkeypatch, tmp_path):
+    # A compaction wiped the nudge from context -> re-present the inbox message.
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    _hook_env(monkeypatch, cfg, "orchestrator")
+    with mock.patch.object(cli.sys, "stdin", io.StringIO('{"source": "compact"}')), \
+         mock.patch.object(cli.mail, "present_current") as pc:
+        assert cli.main(["hook", "claude", "--event", "sessionstart"]) == 0
+    pc.assert_called_once()
+    assert pc.call_args[0][1] == "orchestrator"
+
+
+def test_hook_claude_sessionstart_startup_is_noop(monkeypatch, tmp_path):
+    # `startup` must NOT re-present -- the launch flow already sent the first prompt.
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    _hook_env(monkeypatch, cfg, "orchestrator")
+    with mock.patch.object(cli.sys, "stdin", io.StringIO('{"source": "startup"}')), \
+         mock.patch.object(cli.mail, "present_current") as pc:
+        assert cli.main(["hook", "claude", "--event", "sessionstart"]) == 0
+    pc.assert_not_called()
+
+
+def test_hook_claude_sessionstart_bad_json_is_noop(monkeypatch, tmp_path):
+    cfg = build(tmp_path, GENERAL_AGENTS)
+    _hook_env(monkeypatch, cfg, "orchestrator")
+    with mock.patch.object(cli.sys, "stdin", io.StringIO("not json")), \
+         mock.patch.object(cli.mail, "present_current") as pc:
+        assert cli.main(["hook", "claude", "--event", "sessionstart"]) == 0
+    pc.assert_not_called()
 
 
 def test_hook_codex_not_complete(monkeypatch, tmp_path):

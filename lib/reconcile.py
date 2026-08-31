@@ -60,6 +60,21 @@ def warn(msg: str) -> None:
     print(f"!! {msg}", file=sys.stderr)
 
 
+def _ensure_supervisor(cfg) -> None:
+    """Make sure a liveness heartbeat exists after a start (best-effort).
+
+    ``start_one`` / ``start_all`` are the launch path for the UI buttons, MCP, and
+    Telegram; without this they'd bring agents up with no supervisor (unlike the
+    CLI/dashboard ``up_config`` path). Lazy import + ImportError-tolerant, mirroring
+    ``cli.up_config`` so a stripped-down install still starts agents.
+    """
+    try:
+        import supervisor as _sup  # lazy: keep reconcile importable without it
+    except ImportError:  # defensive, mirrors up_config's ImportError tolerance
+        return
+    _sup.ensure_supervisor(cfg)
+
+
 # --------------------------------------------------------------------------
 # YAML read / write (write path is stdlib-only, no PyYAML)
 # --------------------------------------------------------------------------
@@ -88,7 +103,12 @@ def load_raw(path) -> dict:
 
 
 def _scalar(v) -> str:
-    """Render a scalar for the stdlib YAML emitter."""
+    """Render a single-line scalar for the stdlib YAML emitter.
+
+    Multiline strings are NOT handled here -- ``_dump`` intercepts them and emits
+    a block scalar (``| ...``) instead, because a newline inside a double-quoted
+    scalar is invalid YAML that fails to reparse. See ``_block_body``.
+    """
     if v is None:
         return "null"
     if isinstance(v, bool):
@@ -102,6 +122,45 @@ def _scalar(v) -> str:
     if re.fullmatch(r"[A-Za-z0-9_./@:+-]+", s):
         return s
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _block_body(v: str) -> tuple[str, list[str]]:
+    """Render a multiline string as a literal block scalar (``|``) header + lines.
+
+    Returns ``(header, body_lines)`` where *header* is the block indicator on the
+    ``key:`` line and *body_lines* are the raw content lines (the caller indents
+    them). The chomping indicator round-trips the two cases that occur in real
+    config text (``role:``/``context:``/``files:`` bodies):
+
+      * no trailing newline -> ``|-`` (strip)
+      * any trailing newline -> ``|`` (clip to exactly one)
+
+    ``|+`` (keep 2+ trailing blank lines) is deliberately not emitted: those
+    blank lines carry no meaning in a config field and ``minyaml`` clips them on
+    read, so a value ending in several newlines normalises to a single trailing
+    newline. A newline inside a plain/quoted scalar is invalid YAML, so every
+    multiline value MUST go through here rather than ``_scalar``.
+    """
+    stripped = v.rstrip("\n")
+    if len(v) == len(stripped):  # no trailing newline
+        return "|-", v.split("\n")
+    return "|", stripped.split("\n")
+
+
+def _emit_kv(pad: str, key_prefix: str, v) -> list[str]:
+    """Emit ``<key_prefix> <value>`` lines, using a block scalar when multiline.
+
+    ``key_prefix`` is the text up to and including the colon (e.g. ``"name:"``)
+    or a sequence dash context. For a multiline string the value becomes a
+    literal block scalar whose body is indented one level under *pad*.
+    """
+    if isinstance(v, str) and "\n" in v:
+        header, body = _block_body(v)
+        lines = [f"{pad}{key_prefix} {header}"]
+        body_pad = pad + "  "
+        lines.extend((body_pad + ln) if ln else "" for ln in body)
+        return lines
+    return [f"{pad}{key_prefix} {_scalar(v)}"]
 
 
 def _dump(data, indent: int = 0) -> str:
@@ -128,7 +187,7 @@ def _dump(data, indent: int = 0) -> str:
                 else:
                     lines.append(f"{pad}{k}: []")
             else:
-                lines.append(f"{pad}{k}: {_scalar(v)}")
+                lines.extend(_emit_kv(pad, f"{k}:", v))
     elif isinstance(data, list):
         for item in data:
             if isinstance(item, dict) and item:
@@ -178,6 +237,13 @@ def _commit(cfg, raw: dict) -> "cfgmod.SwarmConfig":
         else:
             path.write_text(prev)
         raise
+
+
+# Fields written to the config verbatim (structured or freeform), never coerced
+# from a string. The config loader validates each on reload.
+_VERBATIM_FIELDS = frozenset(
+    {"pings", "mcp", "context", "skills", "settings", "files"}
+)
 
 
 def _coerce_field(key: str, value: str):
@@ -313,10 +379,12 @@ def edit_agent(cfg, name, **fields) -> "cfgmod.SwarmConfig":
     for a in raw.get("agents") or []:
         if str(a.get("name")) == name:
             for k, v in fields.items():
-                # `pings` is a structured list of {message,cron,when_busy}; write it
-                # through verbatim (the loader validates it). Everything else is a
-                # scalar arriving as a string, coerced to its typed value.
-                a[k] = v if k == "pings" else _coerce_field(k, str(v))
+                # Structured / freeform fields (`pings` list, the coding-agent
+                # config `mcp`/`settings`/`files` maps, `skills` list, and the
+                # multiline `context` string) are written through verbatim -- the
+                # loader validates them. Everything else is a scalar arriving as a
+                # string, coerced to its typed value.
+                a[k] = v if k in _VERBATIM_FIELDS else _coerce_field(k, str(v))
             found = True
             break
     if not found:
@@ -432,6 +500,7 @@ def start_one(cfg, name: str, *, _start_fn=None) -> bool:
         start_fn = _cli.launch_agent_full
     _start_agent(cfg, agent, start_fn)
     info(f"start_one: started {name}")
+    _ensure_supervisor(cfg)
     return True
 
 
@@ -455,7 +524,10 @@ def start_all(cfg, *, _start_fn=None) -> list:
     A thin wrapper over ``reconcile`` (start-only) so the UI's "Start all" button
     has one authoritative launch path. ``_start_fn`` is injectable for tests.
     """
-    return reconcile(cfg, start_missing=True, stop_extra=False, _start_fn=_start_fn)["started"]
+    started = reconcile(cfg, start_missing=True, stop_extra=False, _start_fn=_start_fn)["started"]
+    if started:
+        _ensure_supervisor(cfg)
+    return started
 
 
 def stop_all(cfg) -> list:

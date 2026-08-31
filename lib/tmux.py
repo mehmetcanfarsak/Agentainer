@@ -174,6 +174,50 @@ def pane_text(session: str, scrollback: int = 0) -> str:
         return ""
 
 
+# How far back to scan a pane for the launch-wrapper exit sentinel. After the
+# agent command returns, the wrapper prints the sentinel then `exec bash -l`, so
+# nothing more scrolls the pane -- the sentinel stays near the bottom. A couple
+# hundred lines is ample even if the operator typed a little into the fallback
+# shell.
+EXIT_SCAN_SCROLLBACK = 200
+
+
+def exit_marker(name: str) -> str:
+    """The line-prefix the launch wrapper prints once an agent's command exits.
+
+    ``cli.start_agent``'s launcher runs the agent command then, on return,
+    prints ``[agentainer] agent <name> exited (status <n>)`` and falls back to
+    an interactive login shell (``exec "${SHELL:-bash}" -l``). That keeps the
+    tmux SESSION alive after the agent PROCESS is gone -- so ``session_exists``
+    alone reports a crashed/exited agent as still "running". ``agent_exited``
+    scans for this prefix to tell the two apart. Keep this in sync with the
+    printf in ``cli.start_agent`` (guarded by
+    ``test_launcher_exit_sentinel_matches_marker``).
+    """
+    return f"[agentainer] agent {name} exited (status"
+
+
+def agent_exited(session: str, name: str) -> bool:
+    """True if *session*'s pane shows the wrapper's exit sentinel for *name*.
+
+    Means the agent's CLI has returned and the session is now a bare fallback
+    shell -- alive as a tmux session, dead as an agent. Best-effort (the sentinel
+    can in principle scroll out of the scanned window), and a false negative only
+    degrades to today's behaviour, so it never over-reports an exit.
+    """
+    return exit_marker(name) in pane_text(session, scrollback=EXIT_SCAN_SCROLLBACK)
+
+
+def agent_running(agent) -> bool:
+    """True if *agent*'s tmux session exists AND its CLI has not exited.
+
+    The one truthful "is this agent actually running?" check every status
+    surface (CLI/UI/Telegram/MCP) shares, so a zombie fallback shell is never
+    counted as a live agent.
+    """
+    return session_exists(agent.session) and not agent_exited(agent.session, agent.name)
+
+
 def needle_for(body: str) -> str:
     """The *tail* of the text, which is what stays on screen after a paste.
 
